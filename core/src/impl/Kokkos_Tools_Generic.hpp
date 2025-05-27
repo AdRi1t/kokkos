@@ -610,7 +610,8 @@ void end_parallel_reduce(const ExecPolicy& policy, FunctorType& functor,
 }
 
 template <class ExecPolicy, class FunctorType>
-void begin_single(const ExecPolicy& policy, const std::string& label, uint64_t& kpID) {
+void begin_single(const ExecPolicy& policy, const std::string& label,
+                  uint64_t& kpID) {
   if (Kokkos::Tools::profileLibraryLoaded()) {
     Kokkos::Impl::ParallelConstructName<FunctorType,
                                         typename ExecPolicy::work_tag>
@@ -621,7 +622,7 @@ void begin_single(const ExecPolicy& policy, const std::string& label, uint64_t& 
   }
 }
 
-template<class FunctorType>
+template <class FunctorType>
 void end_single(uint64_t& kpID) {
   if (Kokkos::Tools::profileLibraryLoaded()) {
     Kokkos::Tools::endSingle(kpID);
