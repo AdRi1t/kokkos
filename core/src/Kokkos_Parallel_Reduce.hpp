@@ -213,8 +213,8 @@ struct ParallelReduceAdaptor {
             "contiguous memory!");
     }
 
-    if constexpr (Kokkos::Impl::is_instance_of<PolicyType,
-                                               ::Kokkos::SinglePolicy>::value) {
+    if constexpr (Kokkos::Impl::is_specialization_of_v<
+                      PolicyType, ::Kokkos::SinglePolicy>) {
       // Executing a single() directive through the reduce mechanisms
       Kokkos::Tools::Impl::begin_single<PolicyType, FunctorType>(policy, label,
                                                                  kpID);
