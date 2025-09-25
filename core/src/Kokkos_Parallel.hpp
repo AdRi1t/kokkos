@@ -23,6 +23,7 @@ static_assert(false,
 #include <impl/Kokkos_CheckUsage.hpp>
 #include <impl/Kokkos_FunctorAnalysis.hpp>
 #include <impl/Kokkos_Traits.hpp>
+#include <impl/Kokkos_FunctorWrapperUtil.hpp>
 
 #include <cstddef>
 #include <type_traits>
@@ -482,44 +483,6 @@ inline void parallel_scan(const size_t work_count, const FunctorType& functor,
 /** \brief Execute \c functor on a specific ExecutionSpace in a single thread.
  *
  */
-
-namespace Impl {
-template <class FunctorType>
-struct SingleFunctorWrapper {
-  FunctorType m_functor;
-
-  template <typename WorkTagOrIndex, typename... MaybeIndex>
-  KOKKOS_FUNCTION void operator()(WorkTagOrIndex, MaybeIndex...) const {
-    static_assert(sizeof...(MaybeIndex) <= 1);
-    if constexpr (sizeof...(MaybeIndex) == 0) {
-      m_functor();
-    } else {
-      static_assert(std::is_empty_v<WorkTagOrIndex>);
-      m_functor(WorkTagOrIndex{});
-    }
-  }
-};
-
-template <class FunctorType>
-struct SingleReductorFunctorWrapper {
-  FunctorType m_functor;
-
-  template <typename WorkTagOrIndex, class IndexOrReturnType,
-            typename... MaybeReturnType>
-  KOKKOS_FUNCTION void operator()(const WorkTagOrIndex,
-                                  IndexOrReturnType& indexOrRet,
-                                  MaybeReturnType&... maybeRet) const {
-    static_assert(sizeof...(MaybeReturnType) <= 1);
-    if constexpr (sizeof...(MaybeReturnType) == 0) {
-      m_functor(indexOrRet);
-    } else {
-      static_assert(std::is_empty_v<WorkTagOrIndex>);
-      m_functor(WorkTagOrIndex{}, maybeRet...);
-    }
-  }
-};
-}  // namespace Impl
-
 template <class FunctorType, class... PolicyProperties>
 inline void single(const std::string& str,
                    const SinglePolicy<PolicyProperties...>& single_policy,
@@ -529,7 +492,7 @@ inline void single(const std::string& str,
   // We will use the standard function for parallel_for, so we need to modify
   // the functor in order to make it callable by the standard function by
   // giving it an index parameter
-  ::Kokkos::Impl::SingleFunctorWrapper<FunctorType> functor_wrapper{functor};
+  ::Kokkos::Impl::IndexlessFunctorWrapper<FunctorType> functor_wrapper{functor};
 
   using WrapperType = decltype(functor_wrapper);
 
@@ -572,7 +535,7 @@ inline std::enable_if_t<!(Kokkos::is_view<ReturnType>::value ||
 single(const std::string& label,
        const SinglePolicy<PolicyProperties...>& single_policy,
        const FunctorType& functor, ReturnType& return_value) {
-  ::Kokkos::Impl::SingleReductorFunctorWrapper<FunctorType> functor_wrapper{
+  ::Kokkos::Impl::IndexlessReductionFunctorWrapper<FunctorType> functor_wrapper{
       functor};
 
   ::Kokkos::parallel_reduce(label, single_policy, functor_wrapper,

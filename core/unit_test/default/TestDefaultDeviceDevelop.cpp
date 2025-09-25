@@ -177,9 +177,9 @@ void test_func() {
   {
     int sum1, sum2;
 
-    auto l = KOKKOS_LAMBDA(int& sum1, int& sum2) {
-      sum1 = 1;
-      sum2 = 2;
+    auto l = KOKKOS_LAMBDA(int& s1, int& s2) {
+      s1 = 1;
+      s2 = 2;
     };
 
     // Lambda
@@ -254,10 +254,10 @@ void test_func() {
   {
     int sum1, sum2, sum3;
 
-    auto l = KOKKOS_LAMBDA(int& sum1, int& sum2, int& sum3) {
-      sum1 = 1;
-      sum2 = 2;
-      sum3 = 3;
+    auto l = KOKKOS_LAMBDA(int& s1, int& s2, int& s3) {
+      s1 = 1;
+      s2 = 2;
+      s3 = 3;
     };
 
     // Lambda
