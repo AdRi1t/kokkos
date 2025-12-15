@@ -53,606 +53,66 @@ KOKKOS_IMPL_FORCEINLINE_FUNCTION void _tag_invoke_array(Functor const& f,
                                 (Args&&)args...);
 }
 
-// ------------------------------------------------------------------ //
-// ParallelFor iteration pattern
-// map 2D/3D hardware threads to N-D iteration space
-//
-// For ranks 2-3: Direct mapping of hardware threads to iteration space
-// dimensions.
-// For ranks 4-6: Multiple logical indices are packed into single
-// hardware dimensions.
-//
-// 1. Start iterating at hardware thread identifier
-// 2. Extend iteration space range with stride loops using grid dimensions
-// 3. Bound checking to ensure we do not exceed upper bounds
-//
-template <int N, typename PolicyType, typename Functor, typename MaxGridSize,
-          typename Tag>
+template <int Rank, typename array_index_type, typename Functor, Kokkos::Iterate Layout, typename Tag>
 struct DeviceIterateTile;
 
-// Rank 2
-template <typename PolicyType, typename Functor, typename MaxGridSize,
-          typename Tag>
-struct DeviceIterateTile<2, PolicyType, Functor, MaxGridSize, Tag> {
-  using index_type = typename PolicyType::index_type;
+template <int Rank, typename array_index_type, typename Functor, Kokkos::Iterate Layout, typename Tag>
+struct DeviceIterateTile{
+  using array_type = Kokkos::Array<array_index_type, Rank>;
 
-#ifdef KOKKOS_ENABLE_SYCL
+  Functor m_functor;
+  const array_type m_begins;
+  const array_type m_ends;
+  const array_type m_strides;
+
+  inline __device__ array_type my_begins() const {
+    array_type result = m_begins;
+
+    constexpr unsigned gpu_dims = (Rank < 3) ? Rank : 3;
+
+    if constexpr (gpu_dims >= 1) {
+      result[0] = blockIdx.x * blockDim.x + threadIdx.x + m_begins[0];
+    }
+    if constexpr (gpu_dims >= 2) {
+      result[1] = blockIdx.y * blockDim.y + threadIdx.y + m_begins[1];
+    }
+    if constexpr (gpu_dims >= 3) {
+      result[2] = blockIdx.z * blockDim.z + threadIdx.z + m_begins[2];
+    }
+
+    return result;
+  }
+
   KOKKOS_IMPL_DEVICE_FUNCTION DeviceIterateTile(
-      const PolicyType& policy_, const Functor& f_,
-      const MaxGridSize& max_grid_size_,
-      const EmulateCUDADim3<index_type> gridDim_,
-      const EmulateCUDADim3<index_type> blockDim_,
-      const EmulateCUDADim3<index_type> blockIdx_,
-      const EmulateCUDADim3<index_type> threadIdx_)
-      : m_policy(policy_),
-        m_func(f_),
-        m_max_grid_size(max_grid_size_),
-        gridDim(gridDim_),
-        blockDim(blockDim_),
-        blockIdx(blockIdx_),
-        threadIdx(threadIdx_) {}
-#else
-  KOKKOS_IMPL_DEVICE_FUNCTION DeviceIterateTile(
-      const PolicyType& policy_, const Functor& f_,
-      const MaxGridSize& max_grid_size_)
-      : m_policy(policy_), m_func(f_), m_max_grid_size(max_grid_size_) {}
-#endif
+    const array_type& begins,
+    const array_type& ends,
+    const array_type& strides,
+    const Functor& functor)
+      : m_begins(begins), m_ends(ends), m_strides(strides), m_functor(functor) {}
+
+  template<unsigned R, typename... Idxs>
+  KOKKOS_INLINE_FUNCTION
+  void iterate(std::integral_constant<unsigned, R>, const array_type& mybegin, Idxs ...idxs) const {
+    for(array_index_type idx = mybegin[R]; idx < m_ends[R]; idx += m_strides[R]) {
+      if constexpr (Layout == Iterate::Left)
+        iterate(std::integral_constant<unsigned, R+1>(), mybegin, idxs..., idx);
+      else
+        iterate(std::integral_constant<unsigned, R+1>(), mybegin, idx, idxs...);
+    }
+  }
+
+  template<typename... Idxs>
+  KOKKOS_IMPL_DEVICE_FUNCTION
+  void iterate(std::integral_constant<unsigned, Rank>, const array_type&, Idxs ...idxs) const {
+    Impl::_tag_invoke<Tag>(m_functor, idxs...);
+  }
 
   KOKKOS_IMPL_DEVICE_FUNCTION
   void exec_range() const {
-    // Map policy dimensions to hardware threads
-    constexpr Kokkos::Array<int, 2> idx =
-        (PolicyType::inner_direction == Iterate::Left)
-            ? Kokkos::Array<int, 2>{0, 1}
-            : Kokkos::Array<int, 2>{1, 0};
+    array_type mybegins = my_begins();
+    iterate(std::integral_constant<unsigned, 0u>(), mybegins);
+  }
 
-    const index_type stride_x = gridDim.x * blockDim.x;
-    const index_type stride_y = gridDim.y * blockDim.y;
-
-    const index_type start_0 =
-        blockIdx.x * blockDim.x + threadIdx.x + m_policy.m_lower[idx[0]];
-    const index_type start_1 =
-        blockIdx.y * blockDim.y + threadIdx.y + m_policy.m_lower[idx[1]];
-
-    // Iterate over dimension 0 and 1 with grid strides
-    for (index_type idx_1 = start_1;
-         idx_1 < static_cast<index_type>(m_policy.m_upper[idx[1]]);
-         idx_1 += stride_y) {
-      for (index_type idx_0 = start_0;
-           idx_0 < static_cast<index_type>(m_policy.m_upper[idx[0]]);
-           idx_0 += stride_x) {
-        if constexpr (PolicyType::inner_direction == Iterate::Left) {
-          Impl::_tag_invoke<Tag>(m_func, idx_0, idx_1);
-        } else {
-          Impl::_tag_invoke<Tag>(m_func, idx_1, idx_0);
-        }
-      }
-    }
-  }  // end exec_range
-
- private:
-  const PolicyType& m_policy;
-  const Functor& m_func;
-  const MaxGridSize& m_max_grid_size;
-#ifdef KOKKOS_ENABLE_SYCL
-  const EmulateCUDADim3<index_type> gridDim;
-  const EmulateCUDADim3<index_type> blockDim;
-  const EmulateCUDADim3<index_type> blockIdx;
-  const EmulateCUDADim3<index_type> threadIdx;
-#endif
-};
-
-// Rank 3
-template <typename PolicyType, typename Functor, typename MaxGridSize,
-          typename Tag>
-struct DeviceIterateTile<3, PolicyType, Functor, MaxGridSize, Tag> {
-  using index_type = typename PolicyType::index_type;
-
-#ifdef KOKKOS_ENABLE_SYCL
-  KOKKOS_IMPL_DEVICE_FUNCTION DeviceIterateTile(
-      const PolicyType& policy_, const Functor& f_,
-      const MaxGridSize& max_grid_size_,
-      const EmulateCUDADim3<index_type> gridDim_,
-      const EmulateCUDADim3<index_type> blockDim_,
-      const EmulateCUDADim3<index_type> blockIdx_,
-      const EmulateCUDADim3<index_type> threadIdx_)
-      : m_policy(policy_),
-        m_func(f_),
-        m_max_grid_size(max_grid_size_),
-        gridDim(gridDim_),
-        blockDim(blockDim_),
-        blockIdx(blockIdx_),
-        threadIdx(threadIdx_) {}
-#else
-  KOKKOS_IMPL_DEVICE_FUNCTION DeviceIterateTile(
-      const PolicyType& policy_, const Functor& f_,
-      const MaxGridSize& max_grid_size_)
-      : m_policy(policy_), m_func(f_), m_max_grid_size(max_grid_size_) {}
-#endif
-
-  KOKKOS_IMPL_DEVICE_FUNCTION
-  void exec_range() const {
-    // Map policy dimensions to hardware threads
-    constexpr Kokkos::Array<int, 3> idx =
-        (PolicyType::inner_direction == Iterate::Left)
-            ? Kokkos::Array<int, 3>{0, 1, 2}
-            : Kokkos::Array<int, 3>{2, 1, 0};
-
-    const index_type stride_x = gridDim.x * blockDim.x;
-    const index_type stride_y = gridDim.y * blockDim.y;
-    const index_type stride_z = gridDim.z * blockDim.z;
-
-    const index_type start_0 =
-        blockIdx.x * blockDim.x + threadIdx.x + m_policy.m_lower[idx[0]];
-    const index_type start_1 =
-        blockIdx.y * blockDim.y + threadIdx.y + m_policy.m_lower[idx[1]];
-    const index_type start_2 =
-        blockIdx.z * blockDim.z + threadIdx.z + m_policy.m_lower[idx[2]];
-
-    // Iterate over dimension 2, 1 and 0 with grid strides
-    for (index_type idx_2 = start_2;
-         idx_2 < static_cast<index_type>(m_policy.m_upper[idx[2]]);
-         idx_2 += stride_z) {
-      for (index_type idx_1 = start_1;
-           idx_1 < static_cast<index_type>(m_policy.m_upper[idx[1]]);
-           idx_1 += stride_y) {
-        for (index_type idx_0 = start_0;
-             idx_0 < static_cast<index_type>(m_policy.m_upper[idx[0]]);
-             idx_0 += stride_x) {
-          if constexpr (PolicyType::inner_direction == Iterate::Left) {
-            Impl::_tag_invoke<Tag>(m_func, idx_0, idx_1, idx_2);
-          } else {
-            Impl::_tag_invoke<Tag>(m_func, idx_2, idx_1, idx_0);
-          }
-        }
-      }
-    }
-  }  // end exec_range
-
- private:
-  const PolicyType& m_policy;
-  const Functor& m_func;
-  const MaxGridSize& m_max_grid_size;
-#ifdef KOKKOS_ENABLE_SYCL
-  const EmulateCUDADim3<index_type> gridDim;
-  const EmulateCUDADim3<index_type> blockDim;
-  const EmulateCUDADim3<index_type> blockIdx;
-  const EmulateCUDADim3<index_type> threadIdx;
-#endif
-};
-
-// Rank 4
-template <typename PolicyType, typename Functor, typename MaxGridSize,
-          typename Tag>
-struct DeviceIterateTile<4, PolicyType, Functor, MaxGridSize, Tag> {
-  using index_type = typename PolicyType::index_type;
-
-#ifdef KOKKOS_ENABLE_SYCL
-  KOKKOS_IMPL_DEVICE_FUNCTION DeviceIterateTile(
-      const PolicyType& policy_, const Functor& f_,
-      const MaxGridSize& max_grid_size_,
-      const EmulateCUDADim3<index_type> gridDim_,
-      const EmulateCUDADim3<index_type> blockDim_,
-      const EmulateCUDADim3<index_type> blockIdx_,
-      const EmulateCUDADim3<index_type> threadIdx_)
-      : m_policy(policy_),
-        m_func(f_),
-        m_max_grid_size(max_grid_size_),
-        gridDim(gridDim_),
-        blockDim(blockDim_),
-        blockIdx(blockIdx_),
-        threadIdx(threadIdx_) {}
-#else
-  KOKKOS_IMPL_DEVICE_FUNCTION DeviceIterateTile(
-      const PolicyType& policy_, const Functor& f_,
-      const MaxGridSize& max_grid_size_)
-      : m_policy(policy_), m_func(f_), m_max_grid_size(max_grid_size_) {}
-#endif
-
-  KOKKOS_IMPL_DEVICE_FUNCTION
-  void exec_range() const {
-    const index_type stride_01 = gridDim.x * blockDim.x;
-    const index_type stride_2  = gridDim.y * blockDim.y;
-    const index_type stride_3  = gridDim.z * blockDim.z;
-
-    const index_type start_01 = blockIdx.x * blockDim.x + threadIdx.x;
-    const index_type start_2 =
-        blockIdx.y * blockDim.y + threadIdx.y + m_policy.m_lower[2];
-    const index_type start_3 =
-        blockIdx.z * blockDim.z + threadIdx.z + m_policy.m_lower[3];
-
-    // Maximum number of "virtual" threads needed to cover dimensions 0 and 1
-    const index_type max_threads_0 =
-        (m_policy.m_tile[0] * m_policy.m_tile_end[0]);
-    const index_type max_threads_1 =
-        (m_policy.m_tile[1] * m_policy.m_tile_end[1]);
-    const index_type max_threads_01 = max_threads_0 * max_threads_1;
-
-    // Iterate::Left, fastest index 0
-    if constexpr (PolicyType::inner_direction == Iterate::Left) {
-      // Iterate over dimension 3, 2 and packed 0 and 1 with grid strides
-
-      for (index_type idx_3 = start_3;
-           idx_3 < static_cast<index_type>(m_policy.m_upper[3]);
-           idx_3 += stride_3) {
-        for (index_type idx_2 = start_2;
-             idx_2 < static_cast<index_type>(m_policy.m_upper[2]);
-             idx_2 += stride_2) {
-          // Unpack from dimension x into thread_id_0 (fastest) and thread_id_1
-          for (index_type thread_id_01 = start_01;
-               thread_id_01 < max_threads_01; thread_id_01 += stride_01) {
-            // Unpack flat thread_id_01 into 2D indices
-            const index_type thread_id_1 = thread_id_01 / max_threads_0;
-            const index_type thread_id_0 = thread_id_01 % max_threads_0;
-
-            const index_type idx_1 = thread_id_1 + m_policy.m_lower[1];
-            const index_type idx_0 = thread_id_0 + m_policy.m_lower[0];
-
-            if (idx_1 < static_cast<index_type>(m_policy.m_upper[1]) &&
-                idx_0 < static_cast<index_type>(m_policy.m_upper[0])) {
-              Impl::_tag_invoke<Tag>(m_func, idx_0, idx_1, idx_2, idx_3);
-            }
-          }
-        }
-      }
-
-    } else {  // Iterate::Right, fastest index 3
-      // Iterate over packed dimension 0 and 1 and over 2, 3 with grid strides
-
-      // Unpack from dimension x into thread_id_0 and thread_id_1 (fastest)
-      for (index_type thread_id_01 = start_01; thread_id_01 < max_threads_01;
-           thread_id_01 += stride_01) {
-        // Unpack flat thread_id_01 into 2D indices
-        const index_type thread_id_0 = thread_id_01 / max_threads_1;
-        const index_type thread_id_1 = thread_id_01 % max_threads_1;
-
-        const index_type idx_0 = thread_id_0 + m_policy.m_lower[0];
-        const index_type idx_1 = thread_id_1 + m_policy.m_lower[1];
-
-        if (idx_0 < static_cast<index_type>(m_policy.m_upper[0]) &&
-            idx_1 < static_cast<index_type>(m_policy.m_upper[1])) {
-          for (index_type idx_2 = start_2;
-               idx_2 < static_cast<index_type>(m_policy.m_upper[2]);
-               idx_2 += stride_2) {
-            for (index_type idx_3 = start_3;
-                 idx_3 < static_cast<index_type>(m_policy.m_upper[3]);
-                 idx_3 += stride_3) {
-              Impl::_tag_invoke<Tag>(m_func, idx_0, idx_1, idx_2, idx_3);
-            }
-          }
-        }
-      }
-    }
-
-  }  // end exec_range
-
- private:
-  const PolicyType& m_policy;
-  const Functor& m_func;
-  const MaxGridSize& m_max_grid_size;
-#ifdef KOKKOS_ENABLE_SYCL
-  const EmulateCUDADim3<index_type> gridDim;
-  const EmulateCUDADim3<index_type> blockDim;
-  const EmulateCUDADim3<index_type> blockIdx;
-  const EmulateCUDADim3<index_type> threadIdx;
-#endif
-};
-
-// Rank 5
-template <typename PolicyType, typename Functor, typename MaxGridSize,
-          typename Tag>
-struct DeviceIterateTile<5, PolicyType, Functor, MaxGridSize, Tag> {
-  using index_type = typename PolicyType::index_type;
-
-#ifdef KOKKOS_ENABLE_SYCL
-  KOKKOS_IMPL_DEVICE_FUNCTION DeviceIterateTile(
-      const PolicyType& policy_, const Functor& f_,
-      const MaxGridSize& max_grid_size_,
-      const EmulateCUDADim3<index_type> gridDim_,
-      const EmulateCUDADim3<index_type> blockDim_,
-      const EmulateCUDADim3<index_type> blockIdx_,
-      const EmulateCUDADim3<index_type> threadIdx_)
-      : m_policy(policy_),
-        m_func(f_),
-        m_max_grid_size(max_grid_size_),
-        gridDim(gridDim_),
-        blockDim(blockDim_),
-        blockIdx(blockIdx_),
-        threadIdx(threadIdx_) {}
-#else
-  KOKKOS_IMPL_DEVICE_FUNCTION DeviceIterateTile(
-      const PolicyType& policy_, const Functor& f_,
-      const MaxGridSize& max_grid_size_)
-      : m_policy(policy_), m_func(f_), m_max_grid_size(max_grid_size_) {}
-#endif
-
-  KOKKOS_IMPL_DEVICE_FUNCTION
-  void exec_range() const {
-    const index_type start_01 = blockIdx.x * blockDim.x + threadIdx.x;
-    const index_type start_23 = blockIdx.y * blockDim.y + threadIdx.y;
-    const index_type start_4 =
-        blockIdx.z * blockDim.z + threadIdx.z + m_policy.m_lower[4];
-
-    const index_type stride_01 = gridDim.x * blockDim.x;
-    const index_type stride_23 = gridDim.y * blockDim.y;
-    const index_type stride_4  = gridDim.z * blockDim.z;
-
-    // Maximum number of "virtual" threads needed to cover dimensions 0-3
-    const index_type max_threads_0 =
-        (m_policy.m_tile[0] * m_policy.m_tile_end[0]);
-    const index_type max_threads_1 =
-        (m_policy.m_tile[1] * m_policy.m_tile_end[1]);
-    const index_type max_threads_2 =
-        (m_policy.m_tile[2] * m_policy.m_tile_end[2]);
-    const index_type max_threads_3 =
-        (m_policy.m_tile[3] * m_policy.m_tile_end[3]);
-    const index_type max_threads_01 = max_threads_0 * max_threads_1;
-    const index_type max_threads_23 = max_threads_2 * max_threads_3;
-
-    // Iterate::Left, fastest index 0
-    if (PolicyType::inner_direction == Iterate::Left) {
-      // Iterate over dimension 4, packed 3 and 2, packed 1 and 0 with grid
-      // strides
-
-      for (index_type idx_4 = start_4;
-           idx_4 < static_cast<index_type>(m_policy.m_upper[4]);
-           idx_4 += stride_4) {
-        // Unpack from dimension y into thread_id_2 (fastest) and thread_id_3
-        for (index_type thread_id_23 = start_23; thread_id_23 < max_threads_23;
-             thread_id_23 += stride_23) {
-          // Unpack flat thread_id_23 into 2D indices
-          const index_type thread_id_3 = thread_id_23 / max_threads_2;
-          const index_type thread_id_2 = thread_id_23 % max_threads_2;
-
-          const index_type idx_3 = thread_id_3 + m_policy.m_lower[3];
-          const index_type idx_2 = thread_id_2 + m_policy.m_lower[2];
-
-          if (idx_3 < static_cast<index_type>(m_policy.m_upper[3]) &&
-              idx_2 < static_cast<index_type>(m_policy.m_upper[2])) {
-            // Unpack from dimension x into thread_id_0 (fastest) and
-            // thread_id_1
-            for (index_type thread_id_01 = start_01;
-                 thread_id_01 < max_threads_01; thread_id_01 += stride_01) {
-              // Unpack flat thread_id_01 into 2D indices
-              const index_type thread_id_1 = thread_id_01 / max_threads_0;
-              const index_type thread_id_0 = thread_id_01 % max_threads_0;
-
-              const index_type idx_1 = thread_id_1 + m_policy.m_lower[1];
-              const index_type idx_0 = thread_id_0 + m_policy.m_lower[0];
-
-              if (idx_1 < static_cast<index_type>(m_policy.m_upper[1]) &&
-                  idx_0 < static_cast<index_type>(m_policy.m_upper[0])) {
-                Impl::_tag_invoke<Tag>(m_func, idx_0, idx_1, idx_2, idx_3,
-                                       idx_4);
-              }
-            }
-          }
-        }
-      }
-
-    } else {  // Iterate::Right, fastest index 4
-      // Iterate over packed dimension 0 and 1, packed 2 and 3, and over 4 with
-      // grid strides
-
-      // Unpack from dimension x into thread_id_0 and thread_id_1 (fastest)
-      for (index_type thread_id_01 = start_01; thread_id_01 < max_threads_01;
-           thread_id_01 += stride_01) {
-        // Unpack flat thread_id_01 into 2D indices
-        const index_type thread_id_0 = thread_id_01 / max_threads_1;
-        const index_type thread_id_1 = thread_id_01 % max_threads_1;
-
-        const index_type idx_0 = thread_id_0 + m_policy.m_lower[0];
-        const index_type idx_1 = thread_id_1 + m_policy.m_lower[1];
-
-        if (idx_0 < static_cast<index_type>(m_policy.m_upper[0]) &&
-            idx_1 < static_cast<index_type>(m_policy.m_upper[1])) {
-          // Unpack from dimension y into thread_id_2 and thread_id_3 (fastest)
-          for (index_type thread_id_23 = start_23;
-               thread_id_23 < max_threads_23; thread_id_23 += stride_23) {
-            // Unpack flat thread_id_23 into 2D indices
-            const index_type thread_id_2 = thread_id_23 / max_threads_3;
-            const index_type thread_id_3 = thread_id_23 % max_threads_3;
-
-            const index_type idx_2 = thread_id_2 + m_policy.m_lower[2];
-            const index_type idx_3 = thread_id_3 + m_policy.m_lower[3];
-
-            if (idx_2 < static_cast<index_type>(m_policy.m_upper[2]) &&
-                idx_3 < static_cast<index_type>(m_policy.m_upper[3])) {
-              for (index_type idx_4 = start_4;
-                   idx_4 < static_cast<index_type>(m_policy.m_upper[4]);
-                   idx_4 += stride_4) {
-                Impl::_tag_invoke<Tag>(m_func, idx_0, idx_1, idx_2, idx_3,
-                                       idx_4);
-              }
-            }
-          }
-        }
-      }
-    }
-
-  }  // end exec_range
-
- private:
-  const PolicyType& m_policy;
-  const Functor& m_func;
-  const MaxGridSize& m_max_grid_size;
-#ifdef KOKKOS_ENABLE_SYCL
-  const EmulateCUDADim3<index_type> gridDim;
-  const EmulateCUDADim3<index_type> blockDim;
-  const EmulateCUDADim3<index_type> blockIdx;
-  const EmulateCUDADim3<index_type> threadIdx;
-#endif
-};
-
-// Rank 6
-template <typename PolicyType, typename Functor, typename MaxGridSize,
-          typename Tag>
-struct DeviceIterateTile<6, PolicyType, Functor, MaxGridSize, Tag> {
-  using index_type = typename PolicyType::index_type;
-
-#ifdef KOKKOS_ENABLE_SYCL
-  KOKKOS_IMPL_DEVICE_FUNCTION DeviceIterateTile(
-      const PolicyType& policy_, const Functor& f_,
-      const MaxGridSize& max_grid_size_,
-      const EmulateCUDADim3<index_type> gridDim_,
-      const EmulateCUDADim3<index_type> blockDim_,
-      const EmulateCUDADim3<index_type> blockIdx_,
-      const EmulateCUDADim3<index_type> threadIdx_)
-      : m_policy(policy_),
-        m_func(f_),
-        m_max_grid_size(max_grid_size_),
-        gridDim(gridDim_),
-        blockDim(blockDim_),
-        blockIdx(blockIdx_),
-        threadIdx(threadIdx_) {}
-#else
-  KOKKOS_IMPL_DEVICE_FUNCTION DeviceIterateTile(
-      const PolicyType& policy_, const Functor& f_,
-      const MaxGridSize& max_grid_size_)
-      : m_policy(policy_), m_func(f_), m_max_grid_size(max_grid_size_) {}
-#endif
-
-  KOKKOS_IMPL_DEVICE_FUNCTION
-  void exec_range() const {
-    const index_type start_01 = blockIdx.x * blockDim.x + threadIdx.x;
-    const index_type start_23 = blockIdx.y * blockDim.y + threadIdx.y;
-    const index_type start_45 = blockIdx.z * blockDim.z + threadIdx.z;
-
-    const index_type stride_01 = gridDim.x * blockDim.x;
-    const index_type stride_23 = gridDim.y * blockDim.y;
-    const index_type stride_45 = gridDim.z * blockDim.z;
-
-    // Maximum number of "virtual" threads needed to cover dimensions 0-5
-    const index_type max_threads_0 =
-        (m_policy.m_tile[0] * m_policy.m_tile_end[0]);
-    const index_type max_threads_1 =
-        (m_policy.m_tile[1] * m_policy.m_tile_end[1]);
-    const index_type max_threads_2 =
-        (m_policy.m_tile[2] * m_policy.m_tile_end[2]);
-    const index_type max_threads_3 =
-        (m_policy.m_tile[3] * m_policy.m_tile_end[3]);
-    const index_type max_threads_4 =
-        (m_policy.m_tile[4] * m_policy.m_tile_end[4]);
-    const index_type max_threads_5 =
-        (m_policy.m_tile[5] * m_policy.m_tile_end[5]);
-
-    const index_type max_threads_01 = max_threads_0 * max_threads_1;
-    const index_type max_threads_23 = max_threads_2 * max_threads_3;
-    const index_type max_threads_45 = max_threads_4 * max_threads_5;
-
-    if (PolicyType::inner_direction == Iterate::Left) {
-      // Iterate over packed 5 and 4, packed 3 and 2, packed 1 and 0 with grid
-      // strides
-
-      // Unpack from dimension z into thread_id_4 (fastest) and thread_id_5
-      for (index_type thread_id_45 = start_45; thread_id_45 < max_threads_45;
-           thread_id_45 += stride_45) {
-        // Unpack flat thread_id_45 into 2D indices
-        const index_type thread_id_5 = thread_id_45 / max_threads_4;
-        const index_type thread_id_4 = thread_id_45 % max_threads_4;
-
-        const index_type idx_5 = thread_id_5 + m_policy.m_lower[5];
-        const index_type idx_4 = thread_id_4 + m_policy.m_lower[4];
-
-        if (idx_5 < static_cast<index_type>(m_policy.m_upper[5]) &&
-            idx_4 < static_cast<index_type>(m_policy.m_upper[4])) {
-          // Unpack from dimension y into thread_id_2 (fastest) and thread_id_3
-          for (index_type thread_id_23 = start_23;
-               thread_id_23 < max_threads_23; thread_id_23 += stride_23) {
-            // Unpack flat thread_id_23 into 2D indices
-            const index_type thread_id_3 = thread_id_23 / max_threads_2;
-            const index_type thread_id_2 = thread_id_23 % max_threads_2;
-
-            const index_type idx_3 = thread_id_3 + m_policy.m_lower[3];
-            const index_type idx_2 = thread_id_2 + m_policy.m_lower[2];
-
-            if (idx_3 < static_cast<index_type>(m_policy.m_upper[3]) &&
-                idx_2 < static_cast<index_type>(m_policy.m_upper[2])) {
-              // Unpack from dimension x into thread_id_0 (fastest) and
-              // thread_id_1
-              for (index_type thread_id_01 = start_01;
-                   thread_id_01 < max_threads_01; thread_id_01 += stride_01) {
-                // Unpack flat thread_id_01 into 2D indices
-                const index_type thread_id_1 = thread_id_01 / max_threads_0;
-                const index_type thread_id_0 = thread_id_01 % max_threads_0;
-
-                const index_type idx_1 = thread_id_1 + m_policy.m_lower[1];
-                const index_type idx_0 = thread_id_0 + m_policy.m_lower[0];
-
-                if (idx_1 < static_cast<index_type>(m_policy.m_upper[1]) &&
-                    idx_0 < static_cast<index_type>(m_policy.m_upper[0])) {
-                  Impl::_tag_invoke<Tag>(m_func, idx_0, idx_1, idx_2, idx_3,
-                                         idx_4, idx_5);
-                }
-              }
-            }
-          }
-        }
-      }
-
-    } else {  // Iterate::Right
-      // Iterate over packed dimension 0 and 1, packed 2 and 3, packed 4 and 5
-      // with grid strides
-
-      // Unpack from dimension x into thread_id_0 and thread_id_1 (fastest)
-      for (index_type thread_id_01 = start_01; thread_id_01 < max_threads_01;
-           thread_id_01 += stride_01) {
-        // Unpack flat thread_id_01 into 2D indices
-        const index_type thread_id_0 = thread_id_01 / max_threads_1;
-        const index_type thread_id_1 = thread_id_01 % max_threads_1;
-
-        const index_type idx_0 = thread_id_0 + m_policy.m_lower[0];
-        const index_type idx_1 = thread_id_1 + m_policy.m_lower[1];
-
-        if (idx_0 < static_cast<index_type>(m_policy.m_upper[0]) &&
-            idx_1 < static_cast<index_type>(m_policy.m_upper[1])) {
-          // Unpack from dimension y into thread_id_2 and thread_id_3 (fastest)
-          for (index_type thread_id_23 = start_23;
-               thread_id_23 < max_threads_23; thread_id_23 += stride_23) {
-            // Unpack flat thread_id_23 into 2D indices
-            const index_type thread_id_2 = thread_id_23 / max_threads_3;
-            const index_type thread_id_3 = thread_id_23 % max_threads_3;
-
-            const index_type idx_2 = thread_id_2 + m_policy.m_lower[2];
-            const index_type idx_3 = thread_id_3 + m_policy.m_lower[3];
-
-            if (idx_2 < static_cast<index_type>(m_policy.m_upper[2]) &&
-                idx_3 < static_cast<index_type>(m_policy.m_upper[3])) {
-              // Unpack from dimension z into thread_id_4 and thread_id_5
-              // (fastest)
-              for (index_type thread_id_45 = start_45;
-                   thread_id_45 < max_threads_45; thread_id_45 += stride_45) {
-                // Unpack flat thread_id_45 into 2D indices
-                const index_type thread_id_4 = thread_id_45 / max_threads_5;
-                const index_type thread_id_5 = thread_id_45 % max_threads_5;
-
-                const index_type idx_4 = thread_id_4 + m_policy.m_lower[4];
-                const index_type idx_5 = thread_id_5 + m_policy.m_lower[5];
-
-                if (idx_4 < static_cast<index_type>(m_policy.m_upper[4]) &&
-                    idx_5 < static_cast<index_type>(m_policy.m_upper[5])) {
-                  Impl::_tag_invoke<Tag>(m_func, idx_0, idx_1, idx_2, idx_3,
-                                         idx_4, idx_5);
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-
-  }  // end exec_range
-
- private:
-  const PolicyType& m_policy;
-  const Functor& m_func;
-  const MaxGridSize& m_max_grid_size;
-#ifdef KOKKOS_ENABLE_SYCL
-  const EmulateCUDADim3<index_type> gridDim;
-  const EmulateCUDADim3<index_type> blockDim;
-  const EmulateCUDADim3<index_type> blockIdx;
-  const EmulateCUDADim3<index_type> threadIdx;
-#endif
 };
 
 // ----------------------------------------------------------------------------------
