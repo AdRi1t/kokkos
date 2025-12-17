@@ -73,7 +73,6 @@ class ParallelFor<FunctorType, Kokkos::MDRangePolicy<Traits...>, Kokkos::Cuda> {
 
   array_type m_begins;
   array_type m_ends;
-  mutable array_type m_strides;  // set by execute() function
 
  public:
   template <typename Policy, typename Functor>
@@ -84,10 +83,12 @@ class ParallelFor<FunctorType, Kokkos::MDRangePolicy<Traits...>, Kokkos::Cuda> {
   Policy const& get_policy() const { return m_rp; }
 
   inline __device__ void operator()() const {
-    Kokkos::Impl::DeviceIterateTile<Policy::rank, array_index_type, FunctorType,
-                                    Policy::inner_direction, typename Policy::work_tag>(
-        m_begins, m_ends, m_strides, m_functor).exec_range();
-      }
+    Kokkos::Impl::DeviceIterate<Policy::rank, array_index_type, index_type,
+                                FunctorType, Policy::inner_direction,
+                                typename Policy::work_tag>(m_begins, m_ends,
+                                                           m_functor)
+        .exec_range();
+  }
 
   inline void execute() const {
     if (m_rp.m_num_tiles == 0) return;
@@ -132,60 +133,70 @@ class ParallelFor<FunctorType, Kokkos::MDRangePolicy<Traits...>, Kokkos::Cuda> {
       const array_index_type block_1 = m_rp.m_tile[1];
 
       const array_index_type grid_0 =
-          (m_rp.m_upper[0] - m_rp.m_lower[0] + block_0 - 1) / block_0;
+          (m_ends[0] - m_begins[0] + block_0 - 1) / block_0;
       const array_index_type grid_1 =
-          (m_rp.m_upper[1] - m_rp.m_lower[1] + block_1 - 1) / block_1;
+          (m_ends[1] - m_begins[1] + block_1 - 1) / block_1;
 
       if constexpr (RP::inner_direction == Iterate::Left) {
-        // Iterate::Left, map id0->x, id1->y
         block = dim3(block_0, block_1, 1);
         grid  = dim3(std::min<array_index_type>(grid_0, m_max_grid_size[0]),
                      std::min<array_index_type>(grid_1, m_max_grid_size[1]), 1);
       } else {
-        // Iterate::Right, map id1->x, id0->y
         block = dim3(block_1, block_0, 1);
         grid  = dim3(std::min<array_index_type>(grid_1, m_max_grid_size[0]),
                      std::min<array_index_type>(grid_0, m_max_grid_size[1]), 1);
       }
     } else if constexpr (RP::rank >= 3) {
-      const array_index_type block_0 = m_rp.m_tile[0];
-      const array_index_type block_1 = m_rp.m_tile[1];
-      const array_index_type block_2 = m_rp.m_tile[2];
-
-      const array_index_type grid_0 =
-          (m_rp.m_upper[0] - m_rp.m_lower[0] + block_0 - 1) / block_0;
-      const array_index_type grid_1 =
-          (m_rp.m_upper[1] - m_rp.m_lower[1] + block_1 - 1) / block_1;
-      const array_index_type grid_2 =
-          (m_rp.m_upper[2] - m_rp.m_lower[2] + block_2 - 1) / block_2;
+      array_index_type block_0 = 1;
+      array_index_type block_1 = 1;
+      array_index_type block_2 = 1;
 
       if constexpr (RP::inner_direction == Iterate::Left) {
-        // Iterate::Left, map id0->x, id1->y, id2->z
-        block = dim3(block_0, block_1, block_2);
-        grid  = dim3(std::min<array_index_type>(grid_0, m_max_grid_size[0]),
-                     std::min<array_index_type>(grid_1, m_max_grid_size[1]),
-                     std::min<array_index_type>(grid_2, m_max_grid_size[2]));
+        if constexpr (RP::rank == 3) {
+          block_0 = m_rp.m_tile[0];
+          block_1 = m_rp.m_tile[1];
+          block_2 = m_rp.m_tile[2];
+        } else if constexpr (RP::rank >= 4) {
+          block_0 = m_rp.m_tile[0] * m_rp.m_tile[1];
+          block_1 = m_rp.m_tile[2];
+          block_2 = m_rp.m_tile[3];
+        }
+        if constexpr (RP::rank >= 5) {
+          block_1 = m_rp.m_tile[2] * m_rp.m_tile[3];
+          block_2 = m_rp.m_tile[4];
+        }
+        if constexpr (RP::rank >= 6) {
+          block_2 = m_rp.m_tile[4] * m_rp.m_tile[5];
+        }
       } else {
-        // Iterate::Right, map id2->x, id1->y, id0->z
-        block = dim3(block_2, block_1, block_0);
-        grid  = dim3(std::min<array_index_type>(grid_2, m_max_grid_size[0]),
-                     std::min<array_index_type>(grid_1, m_max_grid_size[1]),
-                     std::min<array_index_type>(grid_0, m_max_grid_size[2]));
+        if constexpr (RP::rank == 3) {
+          block_0 = m_rp.m_tile[2];
+          block_1 = m_rp.m_tile[1];
+          block_2 = m_rp.m_tile[0];
+        } else if constexpr (RP::rank >= 4) {
+          block_0 = m_rp.m_tile[RP::rank - 1] * m_rp.m_tile[RP::rank - 2];
+          block_1 = m_rp.m_tile[RP::rank - 3];
+          block_2 = m_rp.m_tile[RP::rank - 4];
+        }
+        if constexpr (RP::rank >= 5) {
+          block_1 = m_rp.m_tile[RP::rank - 3] * m_rp.m_tile[RP::rank - 4];
+          block_2 = m_rp.m_tile[RP::rank - 5];
+        }
+        if constexpr (RP::rank >= 6) {
+          block_2 = m_rp.m_tile[RP::rank - 5] * m_rp.m_tile[RP::rank - 6];
+        }
       }
-    }
+      const array_index_type grid_0 =
+          (m_ends[0] - m_begins[0] + block_0 - 1) / block_0;
+      const array_index_type grid_1 =
+          (m_ends[1] - m_begins[1] + block_1 - 1) / block_1;
+      const array_index_type grid_2 =
+          (m_ends[2] - m_begins[2] + block_2 - 1) / block_2;
 
-    // Precompute the strides
-    for(int i = 0; i < Policy::rank; ++i) {
-        m_strides[i] = 1;
-    }
-    if constexpr (Policy::rank >= 1) {
-      m_strides[0] = block.x * grid.x;
-    }
-    if constexpr (Policy::rank >= 2) {
-      m_strides[1] = block.y * grid.y;
-    }
-    if constexpr (Policy::rank >= 3) {
-      m_strides[2] = block.z * grid.z;
+      block = dim3(block_0, block_1, block_2);
+      grid  = dim3(std::min<array_index_type>(grid_0, m_max_grid_size[0]),
+                   std::min<array_index_type>(grid_1, m_max_grid_size[1]),
+                   std::min<array_index_type>(grid_2, m_max_grid_size[2]));
     }
 
     // ensure we don't exceed the capability of the device

@@ -53,66 +53,74 @@ KOKKOS_IMPL_FORCEINLINE_FUNCTION void _tag_invoke_array(Functor const& f,
                                 (Args&&)args...);
 }
 
-template <int Rank, typename array_index_type, typename Functor, Kokkos::Iterate Layout, typename Tag>
-struct DeviceIterateTile;
+template <int Rank, typename array_index_type, typename index_type,
+          typename Functor, Kokkos::Iterate Layout, typename Tag>
+struct DeviceIterate;
 
-template <int Rank, typename array_index_type, typename Functor, Kokkos::Iterate Layout, typename Tag>
-struct DeviceIterateTile{
+template <int Rank, typename array_index_type, typename index_type,
+          typename Functor, Kokkos::Iterate Layout, typename Tag>
+struct DeviceIterate {
   using array_type = Kokkos::Array<array_index_type, Rank>;
 
-  Functor m_functor;
   const array_type m_begins;
   const array_type m_ends;
-  const array_type m_strides;
+  Functor m_functor;
 
-  inline __device__ array_type my_begins() const {
-    array_type result = m_begins;
-
-    constexpr unsigned gpu_dims = (Rank < 3) ? Rank : 3;
-
-    if constexpr (gpu_dims >= 1) {
-      result[0] = blockIdx.x * blockDim.x + threadIdx.x + m_begins[0];
-    }
-    if constexpr (gpu_dims >= 2) {
-      result[1] = blockIdx.y * blockDim.y + threadIdx.y + m_begins[1];
-    }
-    if constexpr (gpu_dims >= 3) {
-      result[2] = blockIdx.z * blockDim.z + threadIdx.z + m_begins[2];
-    }
-
-    return result;
-  }
-
-  KOKKOS_IMPL_DEVICE_FUNCTION DeviceIterateTile(
-    const array_type& begins,
-    const array_type& ends,
-    const array_type& strides,
-    const Functor& functor)
-      : m_begins(begins), m_ends(ends), m_strides(strides), m_functor(functor) {}
-
-  template<unsigned R, typename... Idxs>
-  KOKKOS_INLINE_FUNCTION
-  void iterate(std::integral_constant<unsigned, R>, const array_type& mybegin, Idxs ...idxs) const {
-    for(array_index_type idx = mybegin[R]; idx < m_ends[R]; idx += m_strides[R]) {
-      if constexpr (Layout == Iterate::Left)
-        iterate(std::integral_constant<unsigned, R+1>(), mybegin, idxs..., idx);
-      else
-        iterate(std::integral_constant<unsigned, R+1>(), mybegin, idx, idxs...);
+  template <unsigned R>
+  KOKKOS_INLINE_FUNCTION index_type my_begin() const {
+    if constexpr (R == 0) {
+      return m_begins[0] + blockIdx.x * blockDim.x + threadIdx.x;
+    } else if constexpr (R == 1) {
+      return m_begins[1] + blockIdx.y * blockDim.y + threadIdx.y;
+    } else if constexpr (R == 2) {
+      return m_begins[2] + blockIdx.z * blockDim.z + threadIdx.z;
+    } else {
+      return m_begins[R];
     }
   }
 
-  template<typename... Idxs>
-  KOKKOS_IMPL_DEVICE_FUNCTION
-  void iterate(std::integral_constant<unsigned, Rank>, const array_type&, Idxs ...idxs) const {
+  template <unsigned R>
+  KOKKOS_INLINE_FUNCTION constexpr index_type my_stride() const noexcept {
+    if constexpr (R == 0) {
+      return static_cast<index_type>(blockDim.x * gridDim.x);
+    } else if constexpr (R == 1) {
+      return static_cast<index_type>(blockDim.y * gridDim.y);
+    } else if constexpr (R == 2) {
+      return static_cast<index_type>(blockDim.z * gridDim.z);
+    } else {
+      return index_type{1};
+    }
+  }
+
+  KOKKOS_INLINE_FUNCTION DeviceIterate(const array_type& begins,
+                                       const array_type& ends,
+                                       const Functor& functor)
+      : m_begins(begins), m_ends(ends), m_functor(functor) {}
+
+  template <unsigned R, typename... Idxs>
+  KOKKOS_INLINE_FUNCTION void iterate(std::integral_constant<unsigned, R>,
+                                      Idxs... idxs) const {
+    const index_type start  = my_begin<R>();
+    const index_type end    = static_cast<index_type>(m_ends[R]);
+    const index_type stride = my_stride<R>();
+
+    for (index_type idx = start; idx < end; idx += stride) {
+      if constexpr (Layout == Iterate::Left) {
+        iterate(std::integral_constant<unsigned, R + 1>(), idxs..., idx);
+      } else {
+        iterate(std::integral_constant<unsigned, R + 1>(), idx, idxs...);
+      }
+    }
+  }
+
+  template <typename... Idxs>
+  KOKKOS_INLINE_FUNCTION void iterate(std::integral_constant<unsigned, Rank>,
+                                      Idxs... idxs) const {
     Impl::_tag_invoke<Tag>(m_functor, idxs...);
   }
 
-  KOKKOS_IMPL_DEVICE_FUNCTION
-  void exec_range() const {
-    array_type mybegins = my_begins();
-    iterate(std::integral_constant<unsigned, 0u>(), mybegins);
-  }
-
+  KOKKOS_INLINE_FUNCTION
+  void exec_range() const { iterate(std::integral_constant<unsigned, 0u>()); }
 };
 
 // ----------------------------------------------------------------------------------
