@@ -71,8 +71,9 @@ class ParallelFor<FunctorType, Kokkos::MDRangePolicy<Traits...>, Kokkos::Cuda> {
   const Policy m_rp;
   const MaxGridSize m_max_grid_size;
 
-  array_type m_begins;
-  array_type m_ends;
+  array_type m_lower;
+  array_type m_upper;
+  array_type m_max_threads;
 
  public:
   template <typename Policy, typename Functor>
@@ -85,8 +86,8 @@ class ParallelFor<FunctorType, Kokkos::MDRangePolicy<Traits...>, Kokkos::Cuda> {
   inline __device__ void operator()() const {
     Kokkos::Impl::DeviceIterate<Policy::rank, array_index_type, index_type,
                                 FunctorType, Policy::inner_direction,
-                                typename Policy::work_tag>(m_begins, m_ends,
-                                                           m_functor)
+                                typename Policy::work_tag>(m_lower, m_upper,
+                                                           m_max_threads,m_functor)
         .exec_range();
   }
 
@@ -133,9 +134,9 @@ class ParallelFor<FunctorType, Kokkos::MDRangePolicy<Traits...>, Kokkos::Cuda> {
       const array_index_type block_1 = m_rp.m_tile[1];
 
       const array_index_type grid_0 =
-          (m_ends[0] - m_begins[0] + block_0 - 1) / block_0;
+          (m_upper[0] - m_lower[0] + block_0 - 1) / block_0;
       const array_index_type grid_1 =
-          (m_ends[1] - m_begins[1] + block_1 - 1) / block_1;
+          (m_upper[1] - m_lower[1] + block_1 - 1) / block_1;
 
       if constexpr (RP::inner_direction == Iterate::Left) {
         block = dim3(block_0, block_1, 1);
@@ -187,11 +188,11 @@ class ParallelFor<FunctorType, Kokkos::MDRangePolicy<Traits...>, Kokkos::Cuda> {
         }
       }
       const array_index_type grid_0 =
-          (m_ends[0] - m_begins[0] + block_0 - 1) / block_0;
+          (m_upper[0] - m_lower[0] + block_0 - 1) / block_0;
       const array_index_type grid_1 =
-          (m_ends[1] - m_begins[1] + block_1 - 1) / block_1;
+          (m_upper[1] - m_lower[1] + block_1 - 1) / block_1;
       const array_index_type grid_2 =
-          (m_ends[2] - m_begins[2] + block_2 - 1) / block_2;
+          (m_upper[2] - m_lower[2] + block_2 - 1) / block_2;
 
       block = dim3(block_0, block_1, block_2);
       grid  = dim3(std::min<array_index_type>(grid_0, m_max_grid_size[0]),
@@ -223,11 +224,13 @@ class ParallelFor<FunctorType, Kokkos::MDRangePolicy<Traits...>, Kokkos::Cuda> {
     // Swap the fastest indexes to x dimension
     for (array_index_type i = 0; i < Policy::rank; ++i) {
       if constexpr (RP::inner_direction == Iterate::Left) {
-        m_begins[i] = m_rp.m_lower[i];
-        m_ends[i]   = m_rp.m_upper[i];
+        m_lower[i] = m_rp.m_lower[i];
+        m_upper[i] = m_rp.m_upper[i];
+        m_max_threads[i] = m_rp.m_tile[i] * m_rp.m_tile_end[i];
       } else {
-        m_begins[i] = m_rp.m_lower[Policy::rank - 1 - i];
-        m_ends[i]   = m_rp.m_upper[Policy::rank - 1 - i];
+        m_lower[i] = m_rp.m_lower[Policy::rank - 1 - i];
+        m_upper[i] = m_rp.m_upper[Policy::rank - 1 - i];
+        m_max_threads[i] = m_rp.m_tile[Policy::rank - 1 - i] * m_rp.m_tile_end[Policy::rank - 1 - i];
       }
     }
   }

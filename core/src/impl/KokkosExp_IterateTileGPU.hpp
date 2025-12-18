@@ -60,67 +60,184 @@ struct DeviceIterate;
 template <int Rank, typename array_index_type, typename index_type,
           typename Functor, Kokkos::Iterate Layout, typename Tag>
 struct DeviceIterate {
-  using array_type = Kokkos::Array<array_index_type, Rank>;
 
-  const array_type m_begins;
-  const array_type m_ends;
+  using array_type = Kokkos::Array<array_index_type, Rank>;
+  using pair_type =  Kokkos::Array<array_index_type, 2>;
+
+ private:
+  const array_type m_lower;
+  const array_type m_upper;
+  const array_type m_max_threads;
   Functor m_functor;
+
+  // Unpack happen on consecutive ranks
+  template <unsigned R>
+  static constexpr __device__ bool is_packed_index() {
+    return ((R == 0 || R == 1) && Rank > 3) ||
+           ((R == 2 || R == 3) && Rank > 4) ||
+           ((R == 4 || R == 5) && Rank > 5);
+  }
 
   template <unsigned R>
   KOKKOS_INLINE_FUNCTION index_type my_begin() const {
-    if constexpr (R == 0) {
-      return m_begins[0] + blockIdx.x * blockDim.x + threadIdx.x;
-    } else if constexpr (R == 1) {
-      return m_begins[1] + blockIdx.y * blockDim.y + threadIdx.y;
-    } else if constexpr (R == 2) {
-      return m_begins[2] + blockIdx.z * blockDim.z + threadIdx.z;
+    if constexpr (is_packed_index<R>()) {
+      if constexpr (R == 0 || R == 1) {
+        return blockIdx.x * blockDim.x + threadIdx.x;
+      } else if constexpr (R == 2 || R == 3) {
+        return blockIdx.y * blockDim.y + threadIdx.y;
+      } else if constexpr (R == 4 || R == 5) {
+        return blockIdx.z * blockDim.z + threadIdx.z;
+      } else {
+        return m_lower[R];
+      }
     } else {
-      return m_begins[R];
+      if constexpr (R == 0) {
+        return m_lower[R] + blockIdx.x * blockDim.x + threadIdx.x;
+      } else if constexpr (R == 1) {
+        return m_lower[R] + blockIdx.y * blockDim.y + threadIdx.y;
+      } else if constexpr (R == 2) {
+        return m_lower[R] + blockIdx.z * blockDim.z + threadIdx.z;
+      } else {
+        return m_lower[R];
+      }
+    }
+  }
+
+  template <unsigned R>
+  KOKKOS_INLINE_FUNCTION constexpr index_type my_end() const {
+    if constexpr (is_packed_index<R>()) {
+      if constexpr (R % 2 == 0) {
+        return m_max_threads[R] * m_max_threads[R + 1];
+      } else {
+        return m_max_threads[R] * m_max_threads[R - 1];
+      }
+    } else {
+      return m_upper[R];
     }
   }
 
   template <unsigned R>
   KOKKOS_INLINE_FUNCTION constexpr index_type my_stride() const noexcept {
-    if constexpr (R == 0) {
-      return static_cast<index_type>(blockDim.x * gridDim.x);
-    } else if constexpr (R == 1) {
-      return static_cast<index_type>(blockDim.y * gridDim.y);
-    } else if constexpr (R == 2) {
-      return static_cast<index_type>(blockDim.z * gridDim.z);
+    if constexpr (is_packed_index<R>()) {
+      if constexpr (R == 0 || R == 1) {
+        return static_cast<index_type>(blockDim.x * gridDim.x);
+      } else if constexpr (R == 2 || R == 3) {
+        return static_cast<index_type>(blockDim.y * gridDim.y);
+      } else if constexpr (R == 4 || R == 5) {
+        return static_cast<index_type>(blockDim.z * gridDim.z);
+      } else {
+        return index_type{1};
+      }
     } else {
-      return index_type{1};
+      if constexpr (R == 0) {
+        return static_cast<index_type>(blockDim.x * gridDim.x);
+      } else if constexpr (R == 1) {
+        return static_cast<index_type>(blockDim.y * gridDim.y);
+      } else if constexpr (R == 2) {
+        return static_cast<index_type>(blockDim.z * gridDim.z);
+      } else {
+        return index_type{1};
+      }
     }
   }
 
-  KOKKOS_INLINE_FUNCTION DeviceIterate(const array_type& begins,
-                                       const array_type& ends,
-                                       const Functor& functor)
-      : m_begins(begins), m_ends(ends), m_functor(functor) {}
+  // Unpack consecutive indices from a packed index
+  template <unsigned R>
+  KOKKOS_INLINE_FUNCTION bool unpack_and_check(index_type t_idx, pair_type& p) const {
+    static_assert(Rank > 3, "Unpack requires Rank > 3");
+    constexpr index_type idx1 = (R % 2 == 0) ? (R + 1) : R;
+    constexpr index_type idx2 = (R % 2 == 0) ? R : (R - 1);
 
+    const index_type max_threads = m_max_threads[idx2];
+
+    p[0] = t_idx / max_threads + m_lower[idx1];
+    p[1] = t_idx % max_threads + m_lower[idx2];
+    return (p[0] < m_upper[idx1]) & (p[1] < m_upper[idx2]);
+  }
+
+ public:
+  KOKKOS_INLINE_FUNCTION DeviceIterate(const array_type& lower,
+                                       const array_type& upper,
+                                       const array_type& max_threads,
+                                       const Functor& functor)
+      : m_lower(lower), m_upper(upper), m_max_threads(max_threads), m_functor(functor) {}
+
+ private:
+  // Generate nested loops
   template <unsigned R, typename... Idxs>
   KOKKOS_INLINE_FUNCTION void iterate(std::integral_constant<unsigned, R>,
+                                      const array_type& starts,
+                                      const array_type& ends,
+                                      const array_type& strides,
                                       Idxs... idxs) const {
-    const index_type start  = my_begin<R>();
-    const index_type end    = static_cast<index_type>(m_ends[R]);
-    const index_type stride = my_stride<R>();
-
-    for (index_type idx = start; idx < end; idx += stride) {
-      if constexpr (Layout == Iterate::Left) {
-        iterate(std::integral_constant<unsigned, R + 1>(), idxs..., idx);
+    static_assert(R > 0, "R must be greater than 0");
+    constexpr unsigned rankIdx = R - 1;
+    for (index_type idx = starts[rankIdx]; idx < ends[rankIdx]; idx += strides[rankIdx]) {
+      if constexpr (is_packed_index<rankIdx>()) {
+        // Unpack two indices
+        pair_type p;
+        const bool in_bounds = unpack_and_check<rankIdx>(idx, p);
+        if (in_bounds) {
+          if constexpr (rankIdx == 0) {
+            if constexpr (Layout == Iterate::Left) {
+              Impl::_tag_invoke<Tag>(m_functor, p[1], p[0], idxs...);
+            } else {
+              Impl::_tag_invoke<Tag>(m_functor, idxs..., p[0], p[1]);
+            }
+          } else {
+            if constexpr (Layout == Iterate::Left) {
+              iterate(std::integral_constant<unsigned, R - 2>(), starts, ends, strides, p[1], p[0], idxs...);
+            } else {
+              iterate(std::integral_constant<unsigned, R - 2>(), starts, ends, strides, idxs..., p[0], p[1]);
+            }
+          }
+        }
       } else {
-        iterate(std::integral_constant<unsigned, R + 1>(), idx, idxs...);
+        if constexpr (Layout == Iterate::Left) {
+          iterate(std::integral_constant<unsigned, R - 1>(), starts, ends, strides, idx, idxs...);
+        } else {
+          iterate(std::integral_constant<unsigned, R - 1>(), starts, ends, strides, idxs..., idx);
+        }
       }
     }
   }
 
   template <typename... Idxs>
-  KOKKOS_INLINE_FUNCTION void iterate(std::integral_constant<unsigned, Rank>,
+  KOKKOS_INLINE_FUNCTION void iterate(std::integral_constant<unsigned, 0u>,
+                                      const array_type&,
+                                      const array_type&,
+                                      const array_type&,
                                       Idxs... idxs) const {
     Impl::_tag_invoke<Tag>(m_functor, idxs...);
   }
 
+  // Precompute my_begin and my_stride for each rank
+  template <unsigned R>
+  KOKKOS_INLINE_FUNCTION void initialize(std::integral_constant<unsigned, R>,
+                                         array_type& starts,
+                                         array_type& ends,
+                                         array_type& strides) const {
+    starts[R]  = my_begin<R>();
+    ends[R]    = my_end<R>();
+    strides[R] = my_stride<R>();
+    initialize(std::integral_constant<unsigned, R + 1>(), starts, ends, strides);
+  }
+
+  KOKKOS_INLINE_FUNCTION void initialize(std::integral_constant<unsigned, Rank>,
+                                         array_type&, array_type&, array_type&) const {}
+
+public:
   KOKKOS_INLINE_FUNCTION
-  void exec_range() const { iterate(std::integral_constant<unsigned, 0u>()); }
+  void exec_range() const {
+    array_type starts;
+    array_type ends;
+    array_type strides;
+
+    // Initialize bounds
+    initialize(std::integral_constant<unsigned, 0u>(), starts, ends, strides);
+    // Execute nested loops
+    iterate(std::integral_constant<unsigned, Rank>(), starts, ends, strides);
+  }
 };
 
 // ----------------------------------------------------------------------------------
