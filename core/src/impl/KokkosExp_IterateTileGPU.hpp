@@ -55,6 +55,17 @@ KOKKOS_IMPL_FORCEINLINE_FUNCTION void _tag_invoke_array(Functor const& f,
 
 // ------------------------------------------------------------------ //
 // ParallelFor iteration pattern
+// map 2D/3D hardware threads to N-D iteration space
+//
+// For ranks 2-3: Direct mapping of hardware threads to iteration space
+// dimensions.
+// For ranks 4-6: Multiple logical indices are packed into single
+// hardware dimensions.
+//
+// 1. Start iterating at hardware thread identifier
+// 2. Extend iteration space range with stride loops using grid dimensions
+// 3. Bound checking to ensure we do not exceed upper bounds
+//
 template <int Rank, typename array_index_type, typename index_type,
           typename Functor, Kokkos::Iterate Layout, typename Tag>
 struct DeviceIterate;
@@ -81,8 +92,8 @@ struct DeviceIterate {
 #ifdef KOKKOS_ENABLE_SYCL
   KOKKOS_IMPL_DEVICE_FUNCTION DeviceIterate(
       const array_type& lower, const array_type& upper,
-      const array_type& max_threads,
-      const Functor& functor const EmulateCUDADim3<index_type> gridDim_,
+      const array_type& max_threads, const Functor& functor,
+      const EmulateCUDADim3<index_type> gridDim_,
       const EmulateCUDADim3<index_type> blockDim_,
       const EmulateCUDADim3<index_type> blockIdx_,
       const EmulateCUDADim3<index_type> threadIdx_)
@@ -108,13 +119,8 @@ struct DeviceIterate {
 
   KOKKOS_INLINE_FUNCTION
   void exec_range() const {
-    index_type starts[Rank];
-    index_type ends[Rank];
-    index_type strides[Rank];
-    // Initialize bounds
-    initialize(std::integral_constant<unsigned, 0u>(), starts, ends, strides);
-    // Execute nested loops
-    iterate(std::integral_constant<unsigned, Rank>(), starts, ends, strides);
+    // Execute nested loops directly without precomputing arrays
+    iterate(std::integral_constant<unsigned, Rank>());
   }
 
  private:
@@ -126,7 +132,7 @@ struct DeviceIterate {
   }
 
   template <unsigned R>
-  KOKKOS_FORCEINLINE_FUNCTION constexpr index_type my_begin() const {
+  KOKKOS_INLINE_FUNCTION constexpr index_type my_begin() const noexcept {
     static_assert(R < 6, "R must be smaller than 6");
     if constexpr (is_packed_index<R>()) {
       if constexpr (R == 0 || R == 1) {
@@ -164,7 +170,7 @@ struct DeviceIterate {
   }
 
   template <unsigned R>
-  KOKKOS_FORCEINLINE_FUNCTION constexpr index_type my_end() const {
+  KOKKOS_INLINE_FUNCTION constexpr index_type my_end() const noexcept {
     static_assert(R < 6, "R must be smaller than 6");
     if constexpr (is_packed_index<R>()) {
       if constexpr (R % 2 == 0) {
@@ -178,7 +184,7 @@ struct DeviceIterate {
   }
 
   template <unsigned R>
-  KOKKOS_FORCEINLINE_FUNCTION constexpr index_type my_stride() const {
+  KOKKOS_INLINE_FUNCTION constexpr index_type my_stride() const noexcept {
     static_assert(R < 6, "R must be smaller than 6");
     if constexpr (is_packed_index<R>()) {
       if constexpr (R == 0 || R == 1) {
@@ -214,80 +220,49 @@ struct DeviceIterate {
 
   // Generate nested loops
   template <unsigned R, typename... Idxs>
-  KOKKOS_FORCEINLINE_FUNCTION void iterate(std::integral_constant<unsigned, R>,
-                                           const index_type (&starts)[Rank],
-                                           const index_type (&ends)[Rank],
-                                           const index_type (&strides)[Rank],
-                                           Idxs... idxs) const {
+  KOKKOS_INLINE_FUNCTION void iterate(std::integral_constant<unsigned, R>,
+                                      Idxs... idxs) const {
     static_assert(R > 0, "R must be greater than 0");
     constexpr unsigned rankIdx = R - 1;
-    for (index_type idx = starts[rankIdx]; idx < ends[rankIdx];
-         idx += strides[rankIdx]) {
+    const index_type start     = my_begin<rankIdx>();
+    const index_type end       = my_end<rankIdx>();
+    const index_type stride    = my_stride<rankIdx>();
+
+    for (index_type idx = start; idx < end; idx += stride) {
       if constexpr (is_packed_index<rankIdx>()) {
-        // Unpack two indices
+        // Unpack two consecutive indices
         constexpr index_type idx1 =
-            (rankIdx % 2 == 0) ? (rankIdx + 1) : rankIdx;
-        constexpr index_type idx2 =
             (rankIdx % 2 == 0) ? rankIdx : (rankIdx - 1);
+        constexpr index_type idx2 =
+            (rankIdx % 2 == 0) ? (rankIdx + 1) : rankIdx;
 
-        const index_type id_1 = idx / m_max_threads[idx2] + m_lower[idx1];
-        const index_type id_2 = idx % m_max_threads[idx2] + m_lower[idx2];
+        const index_type id_1 = idx % m_max_threads[idx1] + m_lower[idx1];
+        const index_type id_2 = idx / m_max_threads[idx1] + m_lower[idx2];
 
-        if ((id_1 < m_upper[idx1]) && (id_2 < m_upper[idx2])) {
-          if constexpr (rankIdx == 0) {
-            if constexpr (Layout == Iterate::Left) {
-              Impl::_tag_invoke<Tag>(m_functor, id_2, id_1, idxs...);
-            } else {
-              Impl::_tag_invoke<Tag>(m_functor, idxs..., id_1, id_2);
-            }
+        if (id_1 < m_upper[idx1] && id_2 < m_upper[idx2]) {
+          if constexpr (Layout == Iterate::Left) {
+            iterate(std::integral_constant<unsigned, R - 2>(), id_1, id_2,
+                    idxs...);
           } else {
-            if constexpr (Layout == Iterate::Left) {
-              iterate(std::integral_constant<unsigned, R - 2>(), starts, ends,
-                      strides, id_2, id_1, idxs...);
-            } else {
-              iterate(std::integral_constant<unsigned, R - 2>(), starts, ends,
-                      strides, idxs..., id_1, id_2);
-            }
+            iterate(std::integral_constant<unsigned, R - 2>(), idxs..., id_2,
+                    id_1);
           }
         }
       } else {
         if constexpr (Layout == Iterate::Left) {
-          iterate(std::integral_constant<unsigned, R - 1>(), starts, ends,
-                  strides, idx, idxs...);
+          iterate(std::integral_constant<unsigned, R - 1>(), idx, idxs...);
         } else {
-          iterate(std::integral_constant<unsigned, R - 1>(), starts, ends,
-                  strides, idxs..., idx);
+          iterate(std::integral_constant<unsigned, R - 1>(), idxs..., idx);
         }
       }
     }
   }
 
   template <typename... Idxs>
-  KOKKOS_FORCEINLINE_FUNCTION void iterate(std::integral_constant<unsigned, 0u>,
-                                           const index_type (&)[Rank],
-                                           const index_type (&)[Rank],
-                                           const index_type (&)[Rank],
-                                           Idxs... idxs) const {
+  KOKKOS_INLINE_FUNCTION void iterate(std::integral_constant<unsigned, 0u>,
+                                      Idxs... idxs) const {
     Impl::_tag_invoke<Tag>(m_functor, idxs...);
   }
-
-  // Precompute my_begin and my_stride for each rank
-  template <unsigned R>
-  KOKKOS_INLINE_FUNCTION void initialize(std::integral_constant<unsigned, R>,
-                                         index_type (&starts)[Rank],
-                                         index_type (&ends)[Rank],
-                                         index_type (&strides)[Rank]) const {
-    starts[R]  = my_begin<R>();
-    ends[R]    = my_end<R>();
-    strides[R] = my_stride<R>();
-    initialize(std::integral_constant<unsigned, R + 1>(), starts, ends,
-               strides);
-  }
-
-  KOKKOS_INLINE_FUNCTION void initialize(std::integral_constant<unsigned, Rank>,
-                                         index_type (&)[Rank],
-                                         index_type (&)[Rank],
-                                         index_type (&)[Rank]) const {}
 };
 
 // ----------------------------------------------------------------------------------
