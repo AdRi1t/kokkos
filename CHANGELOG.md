@@ -1,4 +1,56 @@
 # CHANGELOG
+## 5.1.0
+
+[Full Changelog](https://github.com/kokkos/kokkos/compare/5.0.2...5.1.0)
+
+### General Enhancements
+* Implement `Kokkos::norm` for `Kokkos::complex` and add overloads for floating point and integer types [\#8927](https://github.com/kokkos/kokkos/pull/8927)
+* Make `Kokkos::conj` `constexpr` [\#8928](https://github.com/kokkos/kokkos/pull/8928)
+* Add `std::nexttoward` wrapper [\#8891](https://github.com/kokkos/kokkos/pull/8891)
+* Provide more math functions in quadruple precision [\#8873](https://github.com/kokkos/kokkos/pull/8873)
+* Add suffixed `rcp{f,l}` non-standard math functions [\#8863](https://github.com/kokkos/kokkos/pull/8863)
+* `View` move constructor is now `noexcept` [\#8792](https://github.com/kokkos/kokkos/pull/8792)
+* `MDRangePolicy`: Redefine default tile sizes per GPU backend (CUDA, HIP, SYCL) to improve performance [\#8731](https://github.com/kokkos/kokkos/pull/8731)
+* Ensure execution space instances fence on destruction [\#8626](https://github.com/kokkos/kokkos/pull/8626)
+* Enforce `TeamPolicy` constructor preconditions [\#8904](https://github.com/kokkos/kokkos/pull/8904) and require vector length to be a power of two [\#8907](https://github.com/kokkos/kokkos/pull/8907)
+* Cleanup `ScatterValue` [\#8761](https://github.com/kokkos/kokkos/pull/8761)
+
+### Backend and Architecture Enhancements:
+
+#### CUDA:
+* Refactor CUDA backend: replace `CudaInternal` singleton with `HostSharedPtr` default instance [\#8883](https://github.com/kokkos/kokkos/pull/8883)
+
+#### HIP:
+* Fix race conditions in `ParallelScan` [\#8648](https://github.com/kokkos/kokkos/pull/8648)
+* Minor changes to support ROCm release candidate [\#8875](https://github.com/kokkos/kokkos/pull/8875)
+
+#### SYCL:
+* Remove singleton [\#8878](https://github.com/kokkos/kokkos/pull/8878)
+
+#### OpenMP:
+* Refactor OpenMP backend: replace singleton with static `HostSharedPtr` default instance [\#8901](https://github.com/kokkos/kokkos/pull/8901)
+* Warn on execution space instance created within OMP parallel region [\#8919](https://github.com/kokkos/kokkos/pull/8919)
+
+### SIMD
+* Add memory permute functions [\#8775](https://github.com/kokkos/kokkos/pull/8775)
+* Use min/max intrinsics for integer types [\#8899](https://github.com/kokkos/kokkos/pull/8899)
+
+### Build System Changes
+* Enable MPI detection with PALS [\#8895](https://github.com/kokkos/kokkos/pull/8895)
+* Warn about `GPU_TARGETS` not being the same as our `Kokkos_ARCH` flag for HIP [\#8938](https://github.com/kokkos/kokkos/pull/8938)
+* Use `/Zc:preprocessor` with MSVC to allow using `__VA_OPT__` [\#8921](https://github.com/kokkos/kokkos/pull/8921)
+
+### Incompatibilities (i.e. breaking changes)
+* Remove code deprecated since Kokkos 4.2 (guarded by `KOKKOS_ENABLE_DEPRECATED_CODE_4`) [\#8957](https://github.com/kokkos/kokkos/pull/8957)
+* Remove deprecated `CUDA_LAMBDA` and `CUDA_LDG_INTRINSIC` macros and options [\#8960](https://github.com/kokkos/kokkos/pull/8960)
+
+### Bug Fixes
+* Fix using non device-copyable functors in `MDRangePolicy` [\#8869](https://github.com/kokkos/kokkos/pull/8869)
+* CUDA, HIP: Fix broken copy semantics and move release of level-1 scratch pad [\#8881](https://github.com/kokkos/kokkos/pull/8881)
+* Remove `__host__` annotations from `DeviceIterate` function members [\#8868](https://github.com/kokkos/kokkos/pull/8868)
+* Identify homebrew LLVM as `KOKKOS_COMPILER_CLANG` [\#8952](https://github.com/kokkos/kokkos/pull/8952)
+* Fix `-Wundef` warnings about `KOKKOS_VERSION*` not being defined [\#8959](https://github.com/kokkos/kokkos/pull/8959)
+
 ## 5.0.2
 
 [Full Changelog](https://github.com/kokkos/kokkos/compare/5.0.1...5.0.2)
