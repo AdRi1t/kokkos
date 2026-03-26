@@ -775,9 +775,11 @@ void initialize(const std::string& profileLibrary) {
   Experimental::no_profiling.begin_parallel_for    = nullptr;
   Experimental::no_profiling.begin_parallel_scan   = nullptr;
   Experimental::no_profiling.begin_parallel_reduce = nullptr;
+  Experimental::no_profiling.begin_single          = nullptr;
   Experimental::no_profiling.end_parallel_scan     = nullptr;
   Experimental::no_profiling.end_parallel_for      = nullptr;
   Experimental::no_profiling.end_parallel_reduce   = nullptr;
+  Experimental::no_profiling.end_single            = nullptr;
 
   Experimental::no_profiling.push_region     = nullptr;
   Experimental::no_profiling.pop_region      = nullptr;
