@@ -14,6 +14,7 @@ static_assert(false,
 #include <Kokkos_ExecPolicy.hpp>
 #include <Kokkos_View.hpp>
 #include <impl/Kokkos_FunctorAnalysis.hpp>
+#include <impl/Kokkos_FunctorWrapperUtil.hpp>
 #include <impl/Kokkos_Tools_Generic.hpp>
 
 #include <type_traits>
@@ -197,6 +198,10 @@ struct ParallelReduceAdaptor {
         functor, typename Analysis::Reducer(
                      forwarding_switch<passed_reducer_type_is_invalid>(
                          functor, return_value)));
+    const auto& response = Kokkos::Tools::Impl::begin_parallel_reduce<
+        typename return_value_adapter::reducer_type>(policy, functor_reducer,
+                                                     label, kpID);
+    const auto& inner_policy = response.policy;
 
     if constexpr (Kokkos::is_view_v<ReturnType>) {
       if constexpr (is_array_reduction)
@@ -213,41 +218,16 @@ struct ParallelReduceAdaptor {
             "contiguous memory!");
     }
 
-    if constexpr (Kokkos::Impl::is_specialization_of_v<
-                      PolicyType, ::Kokkos::SinglePolicy>) {
-      // Executing a single() directive through the reduce mechanisms
-      Kokkos::Tools::Impl::begin_single<PolicyType, FunctorType>(policy, label,
-                                                                 kpID);
+    auto closure = construct_with_shared_allocation_tracking_disabled<
+        Impl::ParallelReduce<CombinedFunctorReducerType, PolicyType,
+                             typename Impl::FunctorPolicyExecutionSpace<
+                                 FunctorType, PolicyType>::execution_space>>(
+        functor_reducer, inner_policy,
+        return_value_adapter::return_value(return_value, functor));
+    closure.execute();
 
-      auto closure = construct_with_shared_allocation_tracking_disabled<
-          Impl::ParallelReduce<
-              CombinedFunctorReducerType, typename PolicyType::base_class,
-              typename Impl::FunctorPolicyExecutionSpace<
-                  FunctorType,
-                  typename PolicyType::base_class>::execution_space>>(
-          functor_reducer, policy,
-          return_value_adapter::return_value(return_value, functor));
-      closure.execute();
-
-      Kokkos::Tools::Impl::end_single<FunctorType>(kpID);
-    } else {
-      const auto& response = Kokkos::Tools::Impl::begin_parallel_reduce<
-          typename return_value_adapter::reducer_type>(policy, functor_reducer,
-                                                       label, kpID);
-
-      const auto& inner_policy = response.policy;
-
-      auto closure = construct_with_shared_allocation_tracking_disabled<
-          Impl::ParallelReduce<CombinedFunctorReducerType, PolicyType,
-                               typename Impl::FunctorPolicyExecutionSpace<
-                                   FunctorType, PolicyType>::execution_space>>(
-          functor_reducer, inner_policy,
-          return_value_adapter::return_value(return_value, functor));
-      closure.execute();
-
-      Kokkos::Tools::Impl::end_parallel_reduce<PassedReducerType>(
-          inner_policy, functor, label, kpID);
-    }
+    Kokkos::Tools::Impl::end_parallel_reduce<PassedReducerType>(
+        inner_policy, functor, label, kpID);
   }
 };
 }  // namespace Impl
@@ -555,6 +535,45 @@ inline void parallel_reduce(const size_t& work_count,
                                                               work_count);
 
   parallel_reduce("", work_count, functor);
+}
+
+// Partial specialization for SinglePolicy
+template <class FunctorType, class ReturnType, class... PolicyProperties>
+inline std::enable_if_t<!(Kokkos::is_view<ReturnType>::value ||
+                          Kokkos::is_reducer<ReturnType>::value ||
+                          std::is_pointer_v<ReturnType>)>
+parallel_reduce(const std::string& label,
+                const SinglePolicy<PolicyProperties...>& single_policy,
+                const FunctorType& functor, ReturnType& return_value) {
+  using WrapperType =
+      Kokkos::Impl::IndexlessReductionFunctorWrapper<FunctorType>;
+  using BasePolicyType = typename SinglePolicy<PolicyProperties...>::base_class;
+
+  WrapperType functor_wrapper{functor};
+
+  static_assert(
+      !std::is_const_v<ReturnType>,
+      "A const reduction result type is only allowed for a View, pointer or "
+      "reducer return type!");
+
+  Impl::ParallelReduceAdaptor<BasePolicyType, WrapperType, ReturnType>::execute(
+      label, single_policy, functor_wrapper, return_value);
+  Impl::ParallelReduceFence<typename BasePolicyType::execution_space,
+                            ReturnType>::
+      fence(
+          single_policy.space(),
+          "Kokkos::parallel_reduce: fence due to result being value, not view",
+          return_value);
+}
+
+template <class FunctorType, class ReturnType, class... PolicyProperties>
+inline std::enable_if_t<!(Kokkos::is_view<ReturnType>::value ||
+                          Kokkos::is_reducer<ReturnType>::value ||
+                          std::is_pointer_v<ReturnType>)&&std::
+                            is_invocable_v<FunctorType, ReturnType&>>
+parallel_reduce(const SinglePolicy<PolicyProperties...>& single_policy,
+                const FunctorType& functor, ReturnType& return_value) {
+  parallel_reduce("", single_policy, functor, return_value);
 }
 
 }  // namespace Kokkos

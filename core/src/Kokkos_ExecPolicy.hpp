@@ -355,7 +355,8 @@ RangePolicy(ES const&, int64_t, int64_t, ChunkSize const&) -> RangePolicy<ES>;
 template <class... Properties>
 class SinglePolicy : public RangePolicy<Properties...> {
  public:
-  using base_class = RangePolicy<Properties...>;
+  using base_class       = RangePolicy<Properties...>;
+  using execution_policy = SinglePolicy<Properties...>;
 
   template <class... OtherProperties>
   SinglePolicy(const SinglePolicy<OtherProperties...>& p)
