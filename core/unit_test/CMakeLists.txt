@@ -183,6 +183,7 @@ foreach(Tag Threads;Serial;OpenMP;Cuda;HPX;OpenACC;HIP;SYCL)
         Reductions
         Reductions_DeviceView
         SharedAlloc
+        Single
         SpaceAwareAccessorAccessViolation
         SpaceAwareAccessor
         Swap
