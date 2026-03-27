@@ -165,6 +165,7 @@ export {
   using ::Kokkos::RangePolicy;
   using ::Kokkos::Schedule;
   using ::Kokkos::single;
+  using ::Kokkos::SinglePolicy;
   using ::Kokkos::Static;
   using ::Kokkos::TeamHandle;
   using ::Kokkos::TeamPolicy;
