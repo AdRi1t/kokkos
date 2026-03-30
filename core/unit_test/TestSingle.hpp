@@ -121,6 +121,14 @@ void test() {
   Kokkos::deep_copy(mirror, v);
   expected *= 3;
   EXPECT_EQ(expected, mirror());
+
+  // +ExecSpace instance
+  Kokkos::DefaultExecutionSpace exec_space;
+  Kokkos::single(Kokkos::SinglePolicy(exec_space), times_2_or_3);
+  exec_space.fence();
+  Kokkos::deep_copy(mirror, v);
+  expected *= 3;
+  EXPECT_EQ(expected, mirror());
 }
 
 void test_one_ouput() {
@@ -172,6 +180,12 @@ void test_one_ouput() {
   Kokkos::single("single with output+worktag", Kokkos::SinglePolicy<TenTag>(),
                  f, val);
   EXPECT_EQ(val, 10);
+
+  // +ExecSpace instance
+  Kokkos::DefaultExecutionSpace exec_space;
+  Kokkos::single(Kokkos::SinglePolicy(exec_space), f, val);
+  exec_space.fence();
+  EXPECT_EQ(val, 5);
 }
 
 void test_multiple_outputs() {
@@ -253,6 +267,13 @@ void test_multiple_outputs() {
         val2);
     EXPECT_EQ(val1, 10);
     EXPECT_EQ(val2, 10);
+
+    // With ExecSpace instance
+    Kokkos::DefaultExecutionSpace exec_space;
+    Kokkos::single(Kokkos::SinglePolicy(exec_space), f, val1, val2);
+    exec_space.fence();
+    EXPECT_EQ(val1, 5);
+    EXPECT_EQ(val2, 5);
   }
 
   {
@@ -346,6 +367,14 @@ void test_multiple_outputs() {
     EXPECT_EQ(val1, 10);
     EXPECT_EQ(val2, 10);
     EXPECT_EQ(val3, 10);
+
+    // With ExecSpace instance
+    Kokkos::DefaultExecutionSpace exec_space;
+    Kokkos::single(Kokkos::SinglePolicy(exec_space), f, val1, val2, val3);
+    exec_space.fence();
+    EXPECT_EQ(val1, 5);
+    EXPECT_EQ(val2, 5);
+    EXPECT_EQ(val3, 5);
   }
 }
 
