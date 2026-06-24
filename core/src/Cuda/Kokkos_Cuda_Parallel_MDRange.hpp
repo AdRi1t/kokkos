@@ -14,11 +14,22 @@
 #include <Cuda/Kokkos_Cuda_KernelLaunch.hpp>
 #include <Cuda/Kokkos_Cuda_ReduceScan.hpp>
 #include <Cuda/Kokkos_Cuda_BlockSize_Deduction.hpp>
+#include <Cuda/Kokkos_Cuda_Parallel_MDRange.hpp> 
 
 #include <KokkosExp_MDRangePolicy.hpp>
 #include <impl/KokkosExp_IterateTileGPU.hpp>
 
+#include <iostream>
+
 namespace Kokkos::Impl {
+
+template<typename T, std::size_t N>
+void print_array(Kokkos::Array<T,N> array) {
+  for(std::size_t i = 0 ; i < N; i++) {
+    std::cout << array[i] << " ";
+  }
+  std::cout << std::endl;
+}
 
 template <typename ParallelType, typename Policy, typename LaunchBounds>
 int max_tile_size_product_helper(const Policy& pol, const LaunchBounds&) {
@@ -168,8 +179,24 @@ class ParallelFor<FunctorType, Kokkos::MDRangePolicy<Traits...>, Kokkos::Cuda> {
                     grid.z <= static_cast<unsigned int>(m_max_grid_size[2]));
     };
 
+    auto tuned_tile = m_policy.m_tile;
+    if (m_policy.m_tune_tile_size) {
+      int max_tile_size = max_tile_size_product(m_policy, m_functor);
+      std::cout << "MDRange<cuda>::max_tile_size_product : " << max_tile_size << std::endl;
+      if (max_tile_size < 512) {
+        max_tile_size = 128;
+        tuned_tile = TileSizeRecommended<typename Policy::execution_space>::get(m_policy, max_tile_size);
+      }
+    }
+
+    std::cout << "MDRange<cuda>::tuned_tile : ";
+    Kokkos::Impl::print_array(tuned_tile);
+    std::cout << std::endl;
+
+    Policy updated_policy(m_lower, m_upper, tuned_tile);
+
     const auto [grid, block] =
-        Kokkos::Impl::compute_device_launch_params(m_policy, m_max_grid_size);
+        Kokkos::Impl::compute_device_launch_params(updated_policy, m_max_grid_size);
 
     // ensure we don't exceed the capability of the device
     check_grid_sizes(grid);
