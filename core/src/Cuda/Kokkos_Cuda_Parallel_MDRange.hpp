@@ -20,6 +20,7 @@
 #include <impl/KokkosExp_IterateTileGPU.hpp>
 
 #include <iostream>
+#include <numeric>
 
 namespace Kokkos::Impl {
 
@@ -42,6 +43,10 @@ int max_tile_size_product_helper(const Policy& pol, const LaunchBounds&) {
   // shared memory constraints
   int const optimal_block_size =
       cuda_get_opt_block_size_no_shmem(prop, attr, LaunchBounds{});
+  std::cout << " optimal_block_size : "      << optimal_block_size << std::endl;
+  std::cout << " attr.sharedSizeBytes : "    << attr.sharedSizeBytes << std::endl;
+  std::cout << " attr.maxThreadsPerBlock : " << attr.maxThreadsPerBlock << std::endl;
+  std::cout << " attr.numRegs : "            << attr.numRegs << std::endl;
 
   // Compute how many blocks of this size we can launch, based on warp
   // constraints
@@ -191,7 +196,6 @@ class ParallelFor<FunctorType, Kokkos::MDRangePolicy<Traits...>, Kokkos::Cuda> {
 
     std::cout << "MDRange<cuda>::tuned_tile : ";
     Kokkos::Impl::print_array(tuned_tile);
-    std::cout << std::endl;
 
     Policy updated_policy(m_lower, m_upper, tuned_tile);
 
@@ -204,6 +208,30 @@ class ParallelFor<FunctorType, Kokkos::MDRangePolicy<Traits...>, Kokkos::Cuda> {
 
     const bool need_grid_stride =
         Kokkos::Impl::need_grid_stride_loop(m_max_grid_size, block, m_extent);
+
+    int blockSize;      // The launch configurator returned block size
+    int minGridSize;    // The minimum grid size needed to achieve the
+                        // maximum occupancy for a full device
+                        // launch
+    int gridSize;       // The actual grid size needed, based on input
+                        // size
+
+   int array_count = std::transform_reduce(m_policy.m_upper.cbegin(), m_policy.m_upper.cend(),
+                                           m_policy.m_lower.cbegin(), 0,
+                                           std::plus<>(), std::minus<>());
+
+    KOKKOS_IMPL_CUDA_SAFE_CALL(cudaOccupancyMaxPotentialBlockSize(
+        &minGridSize,
+        &blockSize,
+        (void*)CudaParallelLaunch<ParallelForMDRange<FunctorType, false, Policy>>::get_kernel_func(),
+        0,
+        array_count));
+
+  std::cout << "minGridSize : " << minGridSize << std::endl;
+  std::cout << "blockSize :   " << blockSize << std::endl;
+  std::cout << "array_count : " << array_count << std::endl;
+
+  std::cout << std::endl;
 
     // Use this kernel for graph capture if the policy is a graph kernel
     if constexpr (Policy::is_graph_kernel::value) {
