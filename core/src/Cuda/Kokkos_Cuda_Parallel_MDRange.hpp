@@ -199,7 +199,18 @@ class ParallelFor<FunctorType, Kokkos::MDRangePolicy<Traits...>, Kokkos::Cuda> {
       }
     }
 
-    Policy updated_policy(m_lower, m_upper, tuned_tile);
+    Policy updated_policy(m_policy.space(), m_policy.m_lower, m_policy.m_upper,
+                          tuned_tile);
+
+    // Recompute m_extent here to match updated_policy.
+    for (array_index_type i = 0; i < Policy::rank; ++i) {
+      if constexpr (Policy::inner_direction == Iterate::Left) {
+        m_extent[i] = updated_policy.m_tile[i] * updated_policy.m_tile_end[i];
+      } else {
+        m_extent[i] = updated_policy.m_tile[Policy::rank - 1 - i] *
+                      updated_policy.m_tile_end[Policy::rank - 1 - i];
+      }
+    }
 
     const auto [grid, block] = Kokkos::Impl::compute_device_launch_params(
         updated_policy, m_max_grid_size);
@@ -218,7 +229,7 @@ class ParallelFor<FunctorType, Kokkos::MDRangePolicy<Traits...>, Kokkos::Cuda> {
           m_policy.space().impl_internal_space_instance());
     } else {
       // launch the kernel with or without grid stride
-      if (need_grid_stride) {
+      if (need_grid_stride) {  // [[unlikely]]
         using ClosureType = ParallelForMDRange<FunctorType, true, Policy>;
         ClosureType closure(m_functor, m_policy, m_lower, m_upper, m_extent);
         CudaParallelLaunch<ClosureType, LaunchBounds>(
