@@ -14,23 +14,11 @@
 #include <Cuda/Kokkos_Cuda_KernelLaunch.hpp>
 #include <Cuda/Kokkos_Cuda_ReduceScan.hpp>
 #include <Cuda/Kokkos_Cuda_BlockSize_Deduction.hpp>
-#include <Cuda/Kokkos_Cuda_Parallel_MDRange.hpp> 
 
 #include <KokkosExp_MDRangePolicy.hpp>
 #include <impl/KokkosExp_IterateTileGPU.hpp>
 
-#include <iostream>
-#include <numeric>
-
 namespace Kokkos::Impl {
-
-template<typename T, std::size_t N>
-void print_array(Kokkos::Array<T,N> array) {
-  for(std::size_t i = 0 ; i < N; i++) {
-    std::cout << array[i] << " ";
-  }
-  std::cout << std::endl;
-}
 
 template <typename ParallelType, typename Policy, typename LaunchBounds>
 int max_tile_size_product_helper(const Policy& pol, const LaunchBounds&) {
@@ -43,10 +31,6 @@ int max_tile_size_product_helper(const Policy& pol, const LaunchBounds&) {
   // shared memory constraints
   int const optimal_block_size =
       cuda_get_opt_block_size_no_shmem(prop, attr, LaunchBounds{});
-  std::cout << " optimal_block_size : "      << optimal_block_size << std::endl;
-  std::cout << " attr.sharedSizeBytes : "    << attr.sharedSizeBytes << std::endl;
-  std::cout << " attr.maxThreadsPerBlock : " << attr.maxThreadsPerBlock << std::endl;
-  std::cout << " attr.numRegs : "            << attr.numRegs << std::endl;
 
   // Compute how many blocks of this size we can launch, based on warp
   // constraints
@@ -132,6 +116,27 @@ class ParallelFor<FunctorType, Kokkos::MDRangePolicy<Traits...>, Kokkos::Cuda> {
   array_type m_upper;
   array_type m_extent;  // tile_size * num_tiles
 
+  int get_block_size_max_occupancy() const {
+    // Computed once per instantiation
+    static int s_block_size = [] {
+      int blockSize   = 0;
+      int minGridSize = 0;
+      KOKKOS_IMPL_CUDA_SAFE_CALL(cudaOccupancyMaxPotentialBlockSize(
+          &minGridSize, &blockSize,
+          // Majority of kernel don't need grid stride.
+          (void*)CudaParallelLaunch<ParallelForMDRange<
+              FunctorType, false, Policy>>::get_kernel_func(),
+          0, 0));
+      return blockSize;
+    }();
+
+    if constexpr (LaunchBounds::maxTperB != 0) {
+      return std::min<int>(LaunchBounds::maxTperB, s_block_size);
+    } else {
+      return s_block_size;
+    }
+  }
+
  public:
   template <typename Policy, typename Functor>
   static int max_tile_size_product(const Policy& pol, const Functor&) {
@@ -186,21 +191,18 @@ class ParallelFor<FunctorType, Kokkos::MDRangePolicy<Traits...>, Kokkos::Cuda> {
 
     auto tuned_tile = m_policy.m_tile;
     if (m_policy.m_tune_tile_size) {
-      int max_tile_size = max_tile_size_product(m_policy, m_functor);
-      std::cout << "MDRange<cuda>::max_tile_size_product : " << max_tile_size << std::endl;
-      if (max_tile_size < 512) {
-        max_tile_size = 128;
-        tuned_tile = TileSizeRecommended<typename Policy::execution_space>::get(m_policy, max_tile_size);
+      int block_size = get_block_size_max_occupancy();
+      if (block_size <= 512 || block_size % 256 != 0) {
+        int max_tile_size = 128;
+        tuned_tile = TileSizeRecommended<typename Policy::execution_space>::get(
+            m_policy, max_tile_size);
       }
     }
 
-    std::cout << "MDRange<cuda>::tuned_tile : ";
-    Kokkos::Impl::print_array(tuned_tile);
-
     Policy updated_policy(m_lower, m_upper, tuned_tile);
 
-    const auto [grid, block] =
-        Kokkos::Impl::compute_device_launch_params(updated_policy, m_max_grid_size);
+    const auto [grid, block] = Kokkos::Impl::compute_device_launch_params(
+        updated_policy, m_max_grid_size);
 
     // ensure we don't exceed the capability of the device
     check_grid_sizes(grid);
@@ -208,30 +210,6 @@ class ParallelFor<FunctorType, Kokkos::MDRangePolicy<Traits...>, Kokkos::Cuda> {
 
     const bool need_grid_stride =
         Kokkos::Impl::need_grid_stride_loop(m_max_grid_size, block, m_extent);
-
-    int blockSize;      // The launch configurator returned block size
-    int minGridSize;    // The minimum grid size needed to achieve the
-                        // maximum occupancy for a full device
-                        // launch
-    int gridSize;       // The actual grid size needed, based on input
-                        // size
-
-   int array_count = std::transform_reduce(m_policy.m_upper.cbegin(), m_policy.m_upper.cend(),
-                                           m_policy.m_lower.cbegin(), 0,
-                                           std::plus<>(), std::minus<>());
-
-    KOKKOS_IMPL_CUDA_SAFE_CALL(cudaOccupancyMaxPotentialBlockSize(
-        &minGridSize,
-        &blockSize,
-        (void*)CudaParallelLaunch<ParallelForMDRange<FunctorType, false, Policy>>::get_kernel_func(),
-        0,
-        array_count));
-
-  std::cout << "minGridSize : " << minGridSize << std::endl;
-  std::cout << "blockSize :   " << blockSize << std::endl;
-  std::cout << "array_count : " << array_count << std::endl;
-
-  std::cout << std::endl;
 
     // Use this kernel for graph capture if the policy is a graph kernel
     if constexpr (Policy::is_graph_kernel::value) {
