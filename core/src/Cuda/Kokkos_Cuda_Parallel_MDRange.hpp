@@ -203,12 +203,14 @@ class ParallelFor<FunctorType, Kokkos::MDRangePolicy<Traits...>, Kokkos::Cuda> {
                           tuned_tile);
 
     // Recompute m_extent here to match updated_policy.
+    auto tuned_extent = m_extent;
     for (array_index_type i = 0; i < Policy::rank; ++i) {
       if constexpr (Policy::inner_direction == Iterate::Left) {
-        m_extent[i] = updated_policy.m_tile[i] * updated_policy.m_tile_end[i];
+        tuned_extent[i] =
+            updated_policy.m_tile[i] * updated_policy.m_tile_end[i];
       } else {
-        m_extent[i] = updated_policy.m_tile[Policy::rank - 1 - i] *
-                      updated_policy.m_tile_end[Policy::rank - 1 - i];
+        tuned_extent[i] = updated_policy.m_tile[Policy::rank - 1 - i] *
+                          updated_policy.m_tile_end[Policy::rank - 1 - i];
       }
     }
 
@@ -219,8 +221,8 @@ class ParallelFor<FunctorType, Kokkos::MDRangePolicy<Traits...>, Kokkos::Cuda> {
     check_grid_sizes(grid);
     check_block_sizes(block);
 
-    const bool need_grid_stride =
-        Kokkos::Impl::need_grid_stride_loop(m_max_grid_size, block, m_extent);
+    const bool need_grid_stride = Kokkos::Impl::need_grid_stride_loop(
+        m_max_grid_size, block, tuned_extent);
 
     // Use this kernel for graph capture if the policy is a graph kernel
     if constexpr (Policy::is_graph_kernel::value) {
@@ -231,13 +233,15 @@ class ParallelFor<FunctorType, Kokkos::MDRangePolicy<Traits...>, Kokkos::Cuda> {
       // launch the kernel with or without grid stride
       if (need_grid_stride) {  // [[unlikely]]
         using ClosureType = ParallelForMDRange<FunctorType, true, Policy>;
-        ClosureType closure(m_functor, m_policy, m_lower, m_upper, m_extent);
+        ClosureType closure(m_functor, m_policy, m_lower, m_upper,
+                            tuned_extent);
         CudaParallelLaunch<ClosureType, LaunchBounds>(
             closure, grid, block, 0,
             m_policy.space().impl_internal_space_instance());
       } else {
         using ClosureType = ParallelForMDRange<FunctorType, false, Policy>;
-        ClosureType closure(m_functor, m_policy, m_lower, m_upper, m_extent);
+        ClosureType closure(m_functor, m_policy, m_lower, m_upper,
+                            tuned_extent);
         CudaParallelLaunch<ClosureType, LaunchBounds>(
             closure, grid, block, 0,
             m_policy.space().impl_internal_space_instance());
