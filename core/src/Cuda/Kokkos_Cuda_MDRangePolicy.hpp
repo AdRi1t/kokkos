@@ -32,7 +32,9 @@ struct TileSizeRecommended<Kokkos::Cuda> {
     using tile_type = typename Policy::tile_type;
 
     tile_type tile_sizes{};
-    if constexpr (Rank == 2) {
+    if constexpr (Rank == 1) {
+      tile_sizes = tile_type{256};
+    } else if constexpr (Rank == 2) {
       tile_sizes = tile_type{64, 4};
     } else if constexpr (Rank == 3) {
       tile_sizes = tile_type{32, 2, 4};
@@ -63,10 +65,10 @@ struct TileSizeRecommended<Kokkos::Cuda> {
 
   template <typename Policy>
   static auto get(Policy const&, const int max_tile_size) {
-    constexpr auto InnerDirection = Policy::inner_direction;
-    constexpr int Rank            = Policy::rank;
+    constexpr auto InnerDirection    = Policy::inner_direction;
+    constexpr int Rank               = Policy::rank;
     constexpr int default_inner_tile = (Rank < 4) ? 32 : 16;
-    constexpr int default_tile = (Rank < 3) ? 4 : 2;
+    constexpr int default_tile       = (Rank < 3) ? 4 : 2;
 
     using tile_type = typename Policy::tile_type;
 
@@ -74,14 +76,14 @@ struct TileSizeRecommended<Kokkos::Cuda> {
 
     tile_type tile_sizes{};
     int prod_tile_dims = inner_tile;
-    tile_sizes[0] = inner_tile;
+    tile_sizes[0]      = (Rank == 1) ? max_tile_size : inner_tile;
 
     for (int i = 1; i < Rank; ++i) {
       if (prod_tile_dims * default_tile <= max_tile_size) {
         tile_sizes[i] = default_tile;
       } else {
         tile_sizes[i] = 1;
-      } 
+      }
       prod_tile_dims *= tile_sizes[i];
     }
 
