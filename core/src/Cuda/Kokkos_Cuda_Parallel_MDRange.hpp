@@ -106,9 +106,8 @@ int get_block_size_max_occupancy(const Policy&, const FunctorType&,
     KOKKOS_IMPL_CUDA_SAFE_CALL(cudaOccupancyMaxPotentialBlockSize(
         &minGridSize, &blockSize,
         // Majority of kernel don't need grid stride.
-        (void*)
-            CudaParallelLaunch<ParallelForMDRange<FunctorType, false, Policy>,
-                               LaunchBounds>::get_kernel_func(),
+        CudaParallelLaunch<ParallelForMDRange<FunctorType, false, Policy>,
+                           LaunchBounds>::get_kernel_func(),
         0, 0));
     return blockSize;
   }();
