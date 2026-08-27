@@ -215,6 +215,42 @@ int cuda_get_opt_block_size_no_shmem(const cudaDeviceProp& prop,
       false, prop, attr, [](int /*block_size*/) { return 0; }, LaunchBounds{});
 }
 
+// Largest tile-size product that maximizes the number of resident threads per
+// SM. Restricted to powers of two. Ties are broken towards larger blocks: at
+// equal occupancy.
+template <class LaunchBounds>
+int cuda_get_opt_tile_size_no_shmem(const cudaDeviceProp& prop,
+                                    const cudaFuncAttributes& attr,
+                                    LaunchBounds) {
+  int max_tile_size = attr.maxThreadsPerBlock;
+  if constexpr (LaunchBounds::maxTperB != 0) {
+    max_tile_size = std::min<int>(max_tile_size, LaunchBounds::maxTperB);
+  }
+  constexpr int min_blocks_per_sm =
+      (LaunchBounds::minBperSM == 0) ? 1 : LaunchBounds::minBperSM;
+
+  int opt_tile_size      = prop.warpSize;
+  int opt_threads_per_sm = 0;
+  int pow_two_tile       = std::bit_floor(static_cast<unsigned>(max_tile_size));
+
+  // Start with the larget possible tile size, reduce by halving tile_size
+  for (int tile_size = pow_two_tile; tile_size >= prop.warpSize;
+       tile_size >>= 1) {
+    const int blocks_per_sm =
+        std::min(cuda_max_active_blocks_per_sm(prop, attr, tile_size, 0),
+                 prop.maxThreadsPerMultiProcessor / tile_size);
+    if (blocks_per_sm >= min_blocks_per_sm) {
+      const int threads_per_sm = blocks_per_sm * tile_size;
+      // Strictly greater: ties will keep the larger tile.
+      if (threads_per_sm > opt_threads_per_sm) {
+        opt_tile_size      = tile_size;
+        opt_threads_per_sm = threads_per_sm;
+      }
+    }
+  }
+  return opt_tile_size;
+}
+
 }  // namespace Impl
 }  // namespace Kokkos
 

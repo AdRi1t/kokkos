@@ -96,25 +96,6 @@ class ParallelForMDRange<FunctorType, UseStride,
         m_extent(extent) {}
 };
 
-template <typename Policy, typename FunctorType, typename LaunchBounds>
-int get_block_size_max_occupancy(const Policy&, const FunctorType&,
-                                 const LaunchBounds&) {
-  // Computed once per instantiation
-  static int s_block_size = [] {
-    int blockSize   = 0;
-    int minGridSize = 0;
-    KOKKOS_IMPL_CUDA_SAFE_CALL(cudaOccupancyMaxPotentialBlockSize(
-        &minGridSize, &blockSize,
-        // Majority of kernel don't need grid stride.
-        CudaParallelLaunch<ParallelForMDRange<FunctorType, false, Policy>,
-                           LaunchBounds>::get_kernel_func(),
-        0, 0));
-    return blockSize;
-  }();
-
-  return s_block_size;
-}
-
 template <class FunctorType, class... Traits>
 class ParallelFor<FunctorType, Kokkos::MDRangePolicy<Traits...>, Kokkos::Cuda> {
  public:
@@ -138,6 +119,20 @@ class ParallelFor<FunctorType, Kokkos::MDRangePolicy<Traits...>, Kokkos::Cuda> {
 
   dim3 m_block;
   dim3 m_grid;
+
+  template <typename PolicyType>
+  void init_launch_params(const PolicyType& pol) {
+    for (array_index_type i = 0; i < PolicyType::rank; ++i) {
+      if constexpr (PolicyType::inner_direction == Iterate::Left) {
+        m_extent[i] = pol.m_tile[i] * pol.m_tile_end[i];
+      } else {
+        m_extent[i] = pol.m_tile[PolicyType::rank - 1 - i] *
+                      pol.m_tile_end[PolicyType::rank - 1 - i];
+      }
+    }
+    std::tie(m_grid, m_block) =
+        Kokkos::Impl::compute_device_launch_params(pol, m_max_grid_size);
+  }
 
  public:
   template <typename Policy, typename Functor>
@@ -243,40 +238,23 @@ class ParallelFor<FunctorType, Kokkos::MDRangePolicy<Traits...>, Kokkos::Cuda> {
     }
 
     if (m_policy.m_tune_tile_size) {
-      auto tuned_tile = m_policy.m_tile;
-      int block_size  = Kokkos::Impl::get_block_size_max_occupancy(
-          m_policy, m_functor, LaunchBounds{});
-      if (block_size <= 512 || block_size % 256 != 0) {
-        int max_tile_size = 128;
-        if constexpr (LaunchBounds::maxTperB != 0) {
-          max_tile_size = std::min<int>(LaunchBounds::maxTperB, max_tile_size);
-        }
-        tuned_tile = TileSizeRecommended<typename Policy::execution_space>::get(
-            m_policy, max_tile_size);
-      }
+      const auto* instance = m_policy.space().impl_internal_space_instance();
+      cudaFuncAttributes attr =
+          CudaParallelLaunch<ParallelForMDRange<FunctorType, false, Policy>,
+                             LaunchBounds>::get_cuda_func_attributes(instance);
+
+      int max_tile_size = cuda_get_opt_tile_size_no_shmem(
+          m_policy.space().cuda_device_prop(), attr, LaunchBounds{});
+
+      max_tile_size = max_tile_size > 256 ? 256 : max_tile_size;
+      const auto tuned_tile =
+          TileSizeRecommended<typename Policy::execution_space>::get(
+              m_policy, max_tile_size);
       Policy updated_policy(m_policy);
       updated_policy.impl_change_tile_size(tuned_tile);
-      for (array_index_type i = 0; i < Policy::rank; ++i) {
-        if constexpr (Policy::inner_direction == Iterate::Left) {
-          m_extent[i] = updated_policy.m_tile[i] * updated_policy.m_tile_end[i];
-        } else {
-          m_extent[i] = updated_policy.m_tile[Policy::rank - 1 - i] *
-                        updated_policy.m_tile_end[Policy::rank - 1 - i];
-        }
-      }
-      std::tie(m_grid, m_block) = Kokkos::Impl::compute_device_launch_params(
-          updated_policy, m_max_grid_size);
+      init_launch_params(updated_policy);
     } else {
-      for (array_index_type i = 0; i < Policy::rank; ++i) {
-        if constexpr (Policy::inner_direction == Iterate::Left) {
-          m_extent[i] = m_policy.m_tile[i] * m_policy.m_tile_end[i];
-        } else {
-          m_extent[i] = m_policy.m_tile[Policy::rank - 1 - i] *
-                        m_policy.m_tile_end[Policy::rank - 1 - i];
-        }
-      }
-      std::tie(m_grid, m_block) =
-          Kokkos::Impl::compute_device_launch_params(m_policy, m_max_grid_size);
+      init_launch_params(m_policy);
     }
   }
 };

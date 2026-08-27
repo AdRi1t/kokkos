@@ -64,25 +64,38 @@ struct TileSizeRecommended<Kokkos::Cuda> {
   }
 
   template <typename Policy>
-  static auto get(Policy const&, const int max_tile_size) {
-    constexpr auto InnerDirection    = Policy::inner_direction;
-    constexpr int Rank               = Policy::rank;
-    constexpr int default_inner_tile = (Rank < 4) ? 32 : 16;
-    constexpr int default_tile       = (Rank < 3) ? 4 : 2;
+  static auto get(Policy const&, const int tile_size) {
+    constexpr auto InnerDirection = Policy::inner_direction;
+    constexpr int Rank            = Policy::rank;
+    int default_inner_tile        = 1;
+    int default_tile              = 1;
+    if (tile_size > 128) {
+      default_inner_tile = (Rank < 5) ? ((Rank < 3) ? 64 : 32) : 16;
+      default_tile       = (Rank < 4) ? 4 : 2;
+    } else {
+      default_inner_tile = (Rank < 4) ? ((Rank < 3) ? 64 : 32) : 16;
+      default_tile       = (Rank < 3) ? 4 : 2;
+    }
 
     using tile_type = typename Policy::tile_type;
-
-    int inner_tile = std::min(default_inner_tile, max_tile_size);
-
     tile_type tile_sizes{};
-    int prod_tile_dims = inner_tile;
-    tile_sizes[0]      = (Rank == 1) ? max_tile_size : inner_tile;
+
+    int inner_tile     = std::min(default_inner_tile, tile_size);
+    tile_sizes[0]      = (Rank == 1) ? tile_size : inner_tile;
+    int prod_tile_dims = tile_sizes[0];
 
     for (int i = 1; i < Rank; ++i) {
-      if (prod_tile_dims * default_tile <= max_tile_size) {
+      if (prod_tile_dims * default_tile <= tile_size) {
         tile_sizes[i] = default_tile;
       } else {
-        tile_sizes[i] = 1;
+        // Try to fit within effective limit by reducing tile size
+        tile_sizes[i] = default_tile;
+        while (tile_sizes[i] > 1 &&
+               prod_tile_dims * tile_sizes[i] > tile_size) {
+          tile_sizes[i] >>= 1;
+        }
+        // Ensure at least 1
+        if (tile_sizes[i] < 1) tile_sizes[i] = 1;
       }
       prod_tile_dims *= tile_sizes[i];
     }
