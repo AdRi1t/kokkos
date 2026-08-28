@@ -63,24 +63,51 @@ struct TileSizeRecommended<Kokkos::Cuda> {
     }
   }
 
+  // Ensure that we have at least k time the size of tile in a dimension, with
+  // respect to a lower bound
+  static int adjust_with_problem_size(long int dimension_size, int tile_size,
+                                      int k, int lower_bound) {
+    while (dimension_size / tile_size < k) {
+      tile_size >>= 1;
+      if (tile_size < lower_bound) {
+        return lower_bound;
+      }
+    }
+    return tile_size;
+  }
+
   template <typename Policy>
-  static auto get(Policy const&, const int tile_size) {
+  static auto get(Policy const& policy, const int tile_size) {
     constexpr auto InnerDirection = Policy::inner_direction;
     constexpr int Rank            = Policy::rank;
-    int default_inner_tile        = 1;
-    int default_tile              = 1;
-    if (tile_size > 128) {
-      default_inner_tile = (Rank < 5) ? ((Rank < 3) ? 64 : 32) : 16;
-      default_tile       = (Rank < 4) ? 4 : 2;
-    } else {
-      default_inner_tile = (Rank < 4) ? ((Rank < 3) ? 64 : 32) : 16;
-      default_tile       = (Rank < 3) ? 4 : 2;
+
+    constexpr int min_tile_size = (Rank < 4) ? 16 : 8;
+    int default_inner_tile      = 1;
+    int default_tile            = 1;
+
+    if constexpr (Rank == 2) {
+      default_inner_tile = 64;
+      default_tile       = 4;
+    } else if constexpr (Rank == 3) {
+      default_inner_tile = 32;
+      default_tile       = (tile_size > 128) ? 4 : 2;
+    } else if constexpr (Rank == 4) {
+      default_inner_tile = (tile_size > 128) ? 32 : 16;
+      default_tile       = (tile_size > 128) ? 4 : 2;
+    } else if constexpr (Rank == 5) {
+      default_inner_tile = 16;
+      default_tile       = 2;
+    } else if constexpr (Rank == 6) {
+      default_inner_tile = (tile_size > 128) ? 16 : 8;
+      default_tile       = 2;
     }
 
     using tile_type = typename Policy::tile_type;
     tile_type tile_sizes{};
 
-    int inner_tile     = std::min(default_inner_tile, tile_size);
+    int inner_tile = std::min(default_inner_tile, tile_size);
+    inner_tile     = adjust_with_problem_size(
+        (policy.m_upper[0] - policy.m_lower[0]), inner_tile, 4, min_tile_size);
     tile_sizes[0]      = (Rank == 1) ? tile_size : inner_tile;
     int prod_tile_dims = tile_sizes[0];
 
