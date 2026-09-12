@@ -151,7 +151,7 @@ class ParallelReduce<CombinedFunctorReducerType,
   inline void execute() {
     ReducerType reducer = m_functor_reducer.get_reducer();
 
-    const auto nwork = m_policy.m_num_tiles;
+    const index_type nwork = m_policy.m_num_tiles;
     if (nwork) {
       int block_size = m_policy.m_prod_tile_dims;
       // CONSTRAINT: Algorithm requires block_size >= product of tile dimensions
@@ -166,6 +166,12 @@ class ParallelReduce<CombinedFunctorReducerType,
                        : suggested_blocksize;  // Note: block_size must be less
                                                // than or equal to 512
 
+      // REQUIRED ( 1 , N , 1 )
+      const dim3 block(1, block_size, 1);
+      const int cc = m_policy.space().concurrency() / block_size;
+      const dim3 grid(static_cast<uint32_t>(std::min(index_type(cc), nwork)), 1,
+                      1);
+
       // Only let one instance at a time resize the instance's scratch memory
       // allocations.
       std::scoped_lock<std::mutex> scratch_buffers_lock(
@@ -173,18 +179,9 @@ class ParallelReduce<CombinedFunctorReducerType,
 
       m_scratch_space =
           reinterpret_cast<word_size_type*>(hip_internal_scratch_space(
-              m_policy.space(),
-              reducer.value_size() *
-                  block_size /* block_size == max block_count */));
+              m_policy.space(), reducer.value_size() * grid.x));
       m_scratch_flags =
           hip_internal_scratch_flags(m_policy.space(), sizeof(size_type));
-
-      // REQUIRED ( 1 , N , 1 )
-      const dim3 block(1, block_size, 1);
-      // Required grid.x <= block.y
-      const dim3 grid(std::min(static_cast<uint32_t>(block.y),
-                               static_cast<uint32_t>(nwork)),
-                      1, 1);
 
       const int shmem =
           ::Kokkos::Impl::hip_single_inter_block_reduce_scan_shmem<
